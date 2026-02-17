@@ -1,0 +1,49 @@
+[project]
+name = "ataxx-zero"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface-hub>=1.4.1",
+    "numpy>=2.2.6",
+    "pygame>=2.6.1",
+    "pytorch-lightning>=2.6.1",
+    "torch>=2.10.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+  "E501", # line too long (manejado por el formateador)
+]
+select = [
+  "E", # pycodestyle errors
+  "F", # pyflakes
+  "I", # isort
+  "UP", # pyupgrade (sintaxis moderna)
+  "B", # bugbear (mejores prácticas)
+  "C4", # comprensiones
+  "SIM", # simplificaciones
+  "RUF", # reglas específicas de Ruff
+  "N", # nomenclatura PEP8
+  "ANN", # anotaciones de tipos obligatorias
+  "S", # seguridad (bandit)
+  "PTH", # usar pathlib en lugar de os.path
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"] # imports sin usar en __init__ están bien
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+
+[dependency-groups]
+dev = [
+    "pyrefly>=0.52.0",
+    "ruff>=0.15.1",
+]

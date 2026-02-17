@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import pytorch_lightning as pl
+import torch
+import torch.nn.functional as functional
+from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from torch import optim
+
+from game.actions import ACTION_SPACE
+from model.transformer import AtaxxTransformerNet
+
+
+class AtaxxZero(pl.LightningModule):
+    """Lightning system for AlphaZero-style policy/value training."""
+
+    def __init__(
+        self,
+        learning_rate: float = 1e-3,
+        weight_decay: float = 1e-4,
+        d_model: int = 128,
+        nhead: int = 8,
+        num_layers: int = 6,
+        dim_feedforward: int = 512,
+        dropout: float = 0.1,
+        scheduler_type: str = "cosine",
+        lr_gamma: float = 0.1,
+        milestones: list[int] | None = None,
+        max_epochs: int = 100,
+    ) -> None:
+        super().__init__()
+        if milestones is None:
+            milestones = [30, 60, 90]
+
+        self.save_hyperparameters()
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.scheduler_type = scheduler_type
+        self.lr_gamma = lr_gamma
+        self.milestones = milestones
+        self.max_epochs = max_epochs
+
+        self.model = AtaxxTransformerNet(
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
+        self.example_input_array = torch.zeros(1, 3, 7, 7)
+
+    def forward(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if "x" in kwargs:
+            x_obj = kwargs["x"]
+        elif len(args) > 0:
+            x_obj = args[0]
+        else:
+            raise ValueError("forward expects a board tensor as first argument.")
+        if not isinstance(x_obj, torch.Tensor):
+            raise TypeError("forward expected torch.Tensor input.")
+        x = x_obj
+        return self.model(x)
+
+    def _common_step(self, batch: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
+        boards, target_pis, target_vs = batch
+        pi_logits, v_pred = self(boards)
+
+        loss_v = functional.mse_loss(v_pred.view(-1), target_vs.view(-1))
+        log_probs = functional.log_softmax(pi_logits, dim=1)
+        loss_pi = -torch.sum(target_pis * log_probs) / target_pis.size(0)
+        loss = loss_v + loss_pi
+
+        with torch.no_grad():
+            pred_actions = torch.argmax(pi_logits, dim=1)
+            target_actions = torch.argmax(target_pis, dim=1)
+            policy_accuracy = (pred_actions == target_actions).float().mean()
+            value_mae = functional.l1_loss(v_pred.view(-1), target_vs.view(-1))
+
+        return {
+            "loss": loss,
+            "loss_value": loss_v,
+            "loss_policy": loss_pi,
+            "policy_accuracy": policy_accuracy,
+            "value_mae": value_mae,
+        }
+
+    def training_step(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        if "batch" in kwargs:
+            batch_obj = kwargs["batch"]
+        elif len(args) > 0:
+            batch_obj = args[0]
+        else:
+            raise ValueError("training_step expects a batch.")
+        if not isinstance(batch_obj, tuple):
+            raise TypeError("training_step expected tuple batch.")
+        batch = batch_obj
+        metrics = self._common_step(batch)
+        if getattr(self, "_trainer", None) is not None:
+            self.log_dict(
+                {
+                    "train/loss": metrics["loss"],
+                    "train/loss_value": metrics["loss_value"],
+                    "train/loss_policy": metrics["loss_policy"],
+                    "train/policy_accuracy": metrics["policy_accuracy"],
+                    "train/value_mae": metrics["value_mae"],
+                },
+                prog_bar=True,
+                on_step=False,
+                on_epoch=True,
+            )
+        return metrics["loss"]
+
+    def validation_step(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        if "batch" in kwargs:
+            batch_obj = kwargs["batch"]
+        elif len(args) > 0:
+            batch_obj = args[0]
+        else:
+            raise ValueError("validation_step expects a batch.")
+        if not isinstance(batch_obj, tuple):
+            raise TypeError("validation_step expected tuple batch.")
+        batch = batch_obj
+        metrics = self._common_step(batch)
+        if getattr(self, "_trainer", None) is not None:
+            self.log_dict(
+                {
+                    "val/loss": metrics["loss"],
+                    "val/loss_value": metrics["loss_value"],
+                    "val/loss_policy": metrics["loss_policy"],
+                    "val/policy_accuracy": metrics["policy_accuracy"],
+                    "val/value_mae": metrics["value_mae"],
+                },
+                prog_bar=True,
+                on_step=False,
+                on_epoch=True,
+            )
+        return metrics["loss"]
+
+    def on_train_epoch_end(self) -> None:
+        optimizers = self.trainer.optimizers if self.trainer is not None else []
+        if len(optimizers) == 0:
+            return
+        current_lr = float(optimizers[0].param_groups[0]["lr"])
+        self.log("train/lr", current_lr, prog_bar=False, on_epoch=True)
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+
+        scheduler_type = self.scheduler_type.lower()
+        if scheduler_type == "cosine":
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer=optimizer,
+                T_max=self.max_epochs,
+                eta_min=self.learning_rate * 0.01,
+            )
+        elif scheduler_type == "multistep":
+            scheduler = optim.lr_scheduler.MultiStepLR(
+                optimizer=optimizer,
+                milestones=list(self.milestones),
+                gamma=self.lr_gamma,
+            )
+        else:
+            return {"optimizer": optimizer}
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            },
+        }
+
+    def predict_step(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if "batch" in kwargs:
+            batch_obj = kwargs["batch"]
+        elif len(args) > 0:
+            batch_obj = args[0]
+        else:
+            raise ValueError("predict_step expects a batch tensor.")
+        if not isinstance(batch_obj, torch.Tensor):
+            raise TypeError("predict_step expected torch.Tensor batch.")
+        policy_logits, value = self(batch_obj)
+        policy = torch.softmax(policy_logits, dim=1)
+        return policy, value
+
+    @property
+    def num_actions(self) -> int:
+        return ACTION_SPACE.num_actions

@@ -1,0 +1,13 @@
+project-includes = [
+    "src/**/*.py",
+    "main.py",
+]
+
+project-excludes = [
+    ".venv/**",
+    "**/__pycache__",
+    "**/.mypy_cache",
+    "**/.pytest_cache",
+]
+
+python-interpreter-path = ".venv/Scripts/python.exe"
