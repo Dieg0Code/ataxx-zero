@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.2.6",
     "pygame>=2.6.1",
     "pytorch-lightning>=2.6.1",
+    "tensorboard>=2.20.0",
     "torch>=2.10.0",
 ]
 
