@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as functional
@@ -64,7 +66,27 @@ class AtaxxZero(pl.LightningModule):
         x = x_obj
         return self.model(x)
 
-    def _common_step(self, batch: tuple[torch.Tensor, ...]) -> dict[str, torch.Tensor]:
+    def _coerce_train_batch(self, batch_obj: object, caller: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not isinstance(batch_obj, Sequence):
+            raise TypeError(f"{caller} expected a sequence batch.")
+        if len(batch_obj) != 3:
+            raise ValueError(f"{caller} expected 3 elements: (boards, target_pis, target_vs).")
+
+        boards_obj = batch_obj[0]
+        target_pis_obj = batch_obj[1]
+        target_vs_obj = batch_obj[2]
+        if not isinstance(boards_obj, torch.Tensor):
+            raise TypeError(f"{caller} expected boards as torch.Tensor.")
+        if not isinstance(target_pis_obj, torch.Tensor):
+            raise TypeError(f"{caller} expected target_pis as torch.Tensor.")
+        if not isinstance(target_vs_obj, torch.Tensor):
+            raise TypeError(f"{caller} expected target_vs as torch.Tensor.")
+        return boards_obj, target_pis_obj, target_vs_obj
+
+    def _common_step(
+        self,
+        batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
         boards, target_pis, target_vs = batch
         pi_logits, v_pred = self(boards)
 
@@ -98,9 +120,7 @@ class AtaxxZero(pl.LightningModule):
             batch_obj = args[0]
         else:
             raise ValueError("training_step expects a batch.")
-        if not isinstance(batch_obj, tuple):
-            raise TypeError("training_step expected tuple batch.")
-        batch = batch_obj
+        batch = self._coerce_train_batch(batch_obj=batch_obj, caller="training_step")
         metrics = self._common_step(batch)
         if getattr(self, "_trainer", None) is not None:
             self.log_dict(
@@ -128,9 +148,7 @@ class AtaxxZero(pl.LightningModule):
             batch_obj = args[0]
         else:
             raise ValueError("validation_step expects a batch.")
-        if not isinstance(batch_obj, tuple):
-            raise TypeError("validation_step expected tuple batch.")
-        batch = batch_obj
+        batch = self._coerce_train_batch(batch_obj=batch_obj, caller="validation_step")
         metrics = self._common_step(batch)
         if getattr(self, "_trainer", None) is not None:
             self.log_dict(
@@ -197,6 +215,8 @@ class AtaxxZero(pl.LightningModule):
             batch_obj = args[0]
         else:
             raise ValueError("predict_step expects a batch tensor.")
+        if isinstance(batch_obj, Sequence) and len(batch_obj) > 0:
+            batch_obj = batch_obj[0]
         if not isinstance(batch_obj, torch.Tensor):
             raise TypeError("predict_step expected torch.Tensor batch.")
         policy_logits, value = self(batch_obj)
