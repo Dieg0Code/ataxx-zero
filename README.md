@@ -53,6 +53,7 @@ Training flags:
 - `--checkpoint-dir <path>`
 - `--log-dir <path>`
 - `--onnx-path <path>`
+- `--no-onnx` disable ONNX export at checkpoint time
 - `--verbose`
 - `--hf` enable Hugging Face upload
 - `--hf-repo-id <org_or_user/repo>`
@@ -63,6 +64,12 @@ Quick smoke run:
 
 ```bash
 uv run python train.py --iterations 2 --episodes 8 --epochs 1 --sims 80 --batch-size 64 --save-every 1 --verbose
+```
+
+If your environment is missing ONNX tooling, use:
+
+```bash
+uv run python train.py --no-onnx ...
 ```
 
 Standard local run:

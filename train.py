@@ -56,6 +56,7 @@ CONFIG: dict[str, int | float | bool | str] = {
     "save_every": 5,
     "keep_last_n_hf_checkpoints": 3,
     "onnx_path": "ataxx_model.onnx",
+    "export_onnx": True,
     "hf_enabled": False,
     "hf_repo_id": "",
     "hf_token_env": "HF_TOKEN",
@@ -77,6 +78,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", default=None)
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--onnx-path", default=None)
+    parser.add_argument("--no-onnx", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--hf", action="store_true")
     parser.add_argument("--hf-repo-id", default=None)
@@ -108,6 +110,8 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["log_dir"] = args.log_dir
     if args.onnx_path is not None:
         CONFIG["onnx_path"] = args.onnx_path
+    if args.no_onnx:
+        CONFIG["export_onnx"] = False
     if args.verbose:
         CONFIG["verbose_logs"] = True
     if args.hf:
@@ -227,7 +231,7 @@ class HuggingFaceCheckpointer:
             token=self.token,
             local_dir=str(self.local_dir),
         )
-        checkpoint = torch.load(model_path, map_location="cpu")
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
         if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
             raise ValueError("Invalid checkpoint format in Hugging Face Hub.")
         state_dict_obj = checkpoint["state_dict"]
@@ -446,21 +450,27 @@ def export_onnx(model: torch.nn.Module, path: str, device: str) -> None:
     model.eval()
     model.to(device)
     dummy_input = torch.randn(1, 3, 7, 7, device=device)
-    torch.onnx.export(
-        model=model,
-        args=dummy_input,
-        f=path,
-        export_params=True,
-        opset_version=11,
-        input_names=["board"],
-        output_names=["policy", "value"],
-        dynamic_axes={
-            "board": {0: "batch_size"},
-            "policy": {0: "batch_size"},
-            "value": {0: "batch_size"},
-        },
-    )
-    _log(f"Exported ONNX to {path}")
+    try:
+        torch.onnx.export(
+            model=model,
+            args=dummy_input,
+            f=path,
+            export_params=True,
+            opset_version=11,
+            input_names=["board"],
+            output_names=["policy", "value"],
+            dynamic_axes={
+                "board": {0: "batch_size"},
+                "policy": {0: "batch_size"},
+                "value": {0: "batch_size"},
+            },
+        )
+        _log(f"Exported ONNX to {path}")
+    except ModuleNotFoundError as exc:
+        _log(
+            "ONNX export skipped: missing dependency "
+            f"({exc}). Install with: `uv add onnx onnxscript`.",
+        )
 
 
 def main() -> None:
@@ -568,8 +578,12 @@ def main() -> None:
         save_every = _cfg_int("save_every")
         if iteration % save_every == 0:
             manual_ckpt = checkpoint_dir / f"manual_iter_{iteration:03d}.ckpt"
-            trainer.save_checkpoint(str(manual_ckpt))
-            export_onnx(system.model, _cfg_str("onnx_path"), device=device)
+            try:
+                trainer.save_checkpoint(str(manual_ckpt))
+                _log(f"Saved local checkpoint: {manual_ckpt}")
+            except OSError:
+                _log("Local checkpoint save failed for this iteration.")
+
             if hf_checkpointer is not None:
                 try:
                     hf_checkpointer.save_checkpoint(
@@ -585,6 +599,13 @@ def main() -> None:
                     _log(f"Uploaded HF checkpoint for iteration {iteration}.")
                 except (OSError, ValueError):
                     _log("HF upload failed for this iteration.")
+            if _cfg_bool("export_onnx"):
+                try:
+                    export_onnx(system.model, _cfg_str("onnx_path"), device=device)
+                except (OSError, RuntimeError, ValueError):
+                    _log("ONNX export failed for this iteration.")
+            else:
+                _log("ONNX export disabled by config/CLI.")
 
 
 if __name__ == "__main__":
