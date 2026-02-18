@@ -54,6 +54,11 @@ Training flags:
 - `--log-dir <path>`
 - `--onnx-path <path>`
 - `--no-onnx` disable ONNX export at checkpoint time
+- `--quiet` less console output (recommended for Kaggle)
+- `--keep-local-ckpts <int>` local manual checkpoints to keep
+- `--keep-log-versions <int>` TensorBoard versions to keep
+- `--devices <int>` trainer devices (GPUs/accelerator processes)
+- `--strategy <name>` Lightning strategy (`auto`, `ddp`, etc.)
 - `--verbose`
 - `--hf` enable Hugging Face upload
 - `--hf-repo-id <org_or_user/repo>`
@@ -64,6 +69,18 @@ Quick smoke run:
 
 ```bash
 uv run python train.py --iterations 2 --episodes 8 --epochs 1 --sims 80 --batch-size 64 --save-every 1 --verbose
+```
+
+Kaggle clean run (low logs + auto cleanup):
+
+```bash
+uv run python train.py --no-onnx --quiet --keep-local-ckpts 2 --keep-log-versions 1 --iterations 20 --episodes 50 --sims 300 --epochs 4 --batch-size 96 --lr 1e-3 --weight-decay 1e-4 --save-every 3
+```
+
+Kaggle 2x T4 (use both GPUs):
+
+```bash
+uv run python train.py --no-onnx --quiet --devices 2 --strategy ddp --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3
 ```
 
 If your environment is missing ONNX tooling, use:

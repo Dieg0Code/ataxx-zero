@@ -54,6 +54,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "log_dir": "logs",
     "checkpoint_dir": "checkpoints",
     "save_every": 5,
+    "keep_last_n_local_checkpoints": 3,
+    "keep_last_n_log_versions": 2,
     "keep_last_n_hf_checkpoints": 3,
     "onnx_path": "ataxx_model.onnx",
     "export_onnx": True,
@@ -61,6 +63,10 @@ CONFIG: dict[str, int | float | bool | str] = {
     "hf_repo_id": "",
     "hf_token_env": "HF_TOKEN",
     "hf_local_dir": "hf_checkpoints",
+    "show_progress_bar": True,
+    "trainer_log_every_n_steps": 10,
+    "trainer_devices": 1,
+    "trainer_strategy": "auto",
 }
 
 
@@ -79,6 +85,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--log-dir", default=None)
     parser.add_argument("--onnx-path", default=None)
     parser.add_argument("--no-onnx", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--keep-local-ckpts", type=int, default=None)
+    parser.add_argument("--keep-log-versions", type=int, default=None)
+    parser.add_argument("--devices", type=int, default=None)
+    parser.add_argument("--strategy", default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--hf", action="store_true")
     parser.add_argument("--hf-repo-id", default=None)
@@ -112,6 +123,17 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["onnx_path"] = args.onnx_path
     if args.no_onnx:
         CONFIG["export_onnx"] = False
+    if args.keep_local_ckpts is not None:
+        CONFIG["keep_last_n_local_checkpoints"] = args.keep_local_ckpts
+    if args.keep_log_versions is not None:
+        CONFIG["keep_last_n_log_versions"] = args.keep_log_versions
+    if args.devices is not None:
+        CONFIG["trainer_devices"] = max(1, args.devices)
+    if args.strategy is not None:
+        CONFIG["trainer_strategy"] = args.strategy
+    if args.quiet:
+        CONFIG["show_progress_bar"] = False
+        CONFIG["trainer_log_every_n_steps"] = 100
     if args.verbose:
         CONFIG["verbose_logs"] = True
     if args.hf:
@@ -140,6 +162,54 @@ def _log(message: str, verbose_only: bool = False) -> None:
     if verbose_only and not _cfg_bool("verbose_logs"):
         return
     print(message)
+
+
+def _resolve_trainer_hw() -> tuple[str, int, str]:
+    requested_devices = _cfg_int("trainer_devices")
+    strategy = _cfg_str("trainer_strategy")
+    if torch.cuda.is_available():
+        available = max(1, torch.cuda.device_count())
+        devices = min(requested_devices, available)
+        if requested_devices > available:
+            _log(
+                f"Requested {requested_devices} GPU(s), but only {available} available. Using {devices}.",
+            )
+        if strategy == "auto" and devices > 1:
+            strategy = "ddp"
+        return "gpu", devices, strategy
+    if requested_devices > 1:
+        _log("CUDA not available, forcing devices=1 on CPU.")
+    return "cpu", 1, strategy
+
+
+def _cleanup_local_checkpoints(checkpoint_dir: Path, keep_last_n: int) -> None:
+    if keep_last_n < 1:
+        keep_last_n = 1
+    manual_files = sorted(checkpoint_dir.glob("manual_iter_*.ckpt"))
+    if len(manual_files) <= keep_last_n:
+        return
+    for path in manual_files[:-keep_last_n]:
+        path.unlink(missing_ok=True)
+        _log(f"Deleted old local checkpoint: {path.name}", verbose_only=True)
+
+
+def _cleanup_old_log_versions(log_dir: Path, run_name: str, keep_last_n: int) -> None:
+    if keep_last_n < 1:
+        keep_last_n = 1
+    run_dir = log_dir / run_name
+    if not run_dir.exists():
+        return
+    versions = sorted([p for p in run_dir.glob("version_*") if p.is_dir()])
+    if len(versions) <= keep_last_n:
+        return
+    for old_dir in versions[:-keep_last_n]:
+        for child in old_dir.rglob("*"):
+            if child.is_file():
+                child.unlink(missing_ok=True)
+        for child_dir in sorted([p for p in old_dir.rglob("*") if p.is_dir()], reverse=True):
+            child_dir.rmdir()
+        old_dir.rmdir()
+        _log(f"Deleted old log version: {old_dir.name}", verbose_only=True)
 
 
 class HuggingFaceCheckpointer:
@@ -484,9 +554,16 @@ def main() -> None:
     torch.set_float32_matmul_precision("medium")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     _log(f"Device: {device}")
+    trainer_accelerator, trainer_devices, trainer_strategy = _resolve_trainer_hw()
+    _log(
+        "Trainer HW: "
+        f"accelerator={trainer_accelerator}, devices={trainer_devices}, strategy={trainer_strategy}",
+    )
 
     checkpoint_dir = Path(_cfg_str("checkpoint_dir"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(_cfg_str("log_dir"))
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     iterations = _cfg_int("iterations")
     epochs = _cfg_int("epochs")
@@ -526,7 +603,7 @@ def main() -> None:
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
-    logger = TensorBoardLogger(save_dir=_cfg_str("log_dir"), name="ataxx_zero")
+    logger = TensorBoardLogger(save_dir=str(log_dir), name="ataxx_zero")
 
     for iteration in range(start_iteration + 1, iterations + 1):
         _log(f"=== Iteration {iteration}/{iterations} ===")
@@ -561,12 +638,13 @@ def main() -> None:
 
         trainer = pl.Trainer(
             max_epochs=epochs,
-            accelerator="auto",
-            devices=1,
+            accelerator=trainer_accelerator,
+            devices=trainer_devices,
+            strategy=trainer_strategy,
             callbacks=[checkpoint_callback, lr_monitor],
             logger=logger,
-            enable_progress_bar=True,
-            log_every_n_steps=10,
+            enable_progress_bar=_cfg_bool("show_progress_bar"),
+            log_every_n_steps=_cfg_int("trainer_log_every_n_steps"),
             gradient_clip_val=1.0,
         )
         trainer.fit(
@@ -581,6 +659,10 @@ def main() -> None:
             try:
                 trainer.save_checkpoint(str(manual_ckpt))
                 _log(f"Saved local checkpoint: {manual_ckpt}")
+                _cleanup_local_checkpoints(
+                    checkpoint_dir=checkpoint_dir,
+                    keep_last_n=_cfg_int("keep_last_n_local_checkpoints"),
+                )
             except OSError:
                 _log("Local checkpoint save failed for this iteration.")
 
@@ -606,6 +688,11 @@ def main() -> None:
                     _log("ONNX export failed for this iteration.")
             else:
                 _log("ONNX export disabled by config/CLI.")
+            _cleanup_old_log_versions(
+                log_dir=log_dir,
+                run_name="ataxx_zero",
+                keep_last_n=_cfg_int("keep_last_n_log_versions"),
+            )
 
 
 if __name__ == "__main__":
