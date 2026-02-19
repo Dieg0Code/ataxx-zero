@@ -182,6 +182,37 @@ def _resolve_trainer_hw() -> tuple[str, int, str]:
     return "cpu", 1, strategy
 
 
+def _is_ddp_rendezvous_timeout(exc: BaseException) -> bool:
+    msg = str(exc)
+    return (
+        ("DistStoreError" in msg or "init_process_group" in msg)
+        and ("clients joined" in msg or "Timed out" in msg)
+    )
+
+
+def _build_trainer(
+    *,
+    epochs: int,
+    accelerator: str,
+    devices: int,
+    strategy: str,
+    checkpoint_callback: ModelCheckpoint,
+    lr_monitor: LearningRateMonitor,
+    logger: TensorBoardLogger,
+) -> pl.Trainer:
+    return pl.Trainer(
+        max_epochs=epochs,
+        accelerator=accelerator,
+        devices=devices,
+        strategy=strategy,
+        callbacks=[checkpoint_callback, lr_monitor],
+        logger=logger,
+        enable_progress_bar=_cfg_bool("show_progress_bar"),
+        log_every_n_steps=_cfg_int("trainer_log_every_n_steps"),
+        gradient_clip_val=1.0,
+    )
+
+
 def _cleanup_local_checkpoints(checkpoint_dir: Path, keep_last_n: int) -> None:
     if keep_last_n < 1:
         keep_last_n = 1
@@ -636,22 +667,45 @@ def main() -> None:
             else None
         )
 
-        trainer = pl.Trainer(
-            max_epochs=epochs,
+        trainer = _build_trainer(
+            epochs=epochs,
             accelerator=trainer_accelerator,
             devices=trainer_devices,
             strategy=trainer_strategy,
-            callbacks=[checkpoint_callback, lr_monitor],
+            checkpoint_callback=checkpoint_callback,
+            lr_monitor=lr_monitor,
             logger=logger,
-            enable_progress_bar=_cfg_bool("show_progress_bar"),
-            log_every_n_steps=_cfg_int("trainer_log_every_n_steps"),
-            gradient_clip_val=1.0,
         )
-        trainer.fit(
-            model=system,
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-        )
+        try:
+            trainer.fit(
+                model=system,
+                train_dataloaders=train_loader,
+                val_dataloaders=val_loader,
+            )
+        except Exception as exc:
+            if trainer_devices > 1 and _is_ddp_rendezvous_timeout(exc):
+                _log(
+                    "DDP rendezvous failed. Falling back to single-GPU for this run.",
+                )
+                trainer_accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+                trainer_devices = 1
+                trainer_strategy = "auto"
+                trainer = _build_trainer(
+                    epochs=epochs,
+                    accelerator=trainer_accelerator,
+                    devices=trainer_devices,
+                    strategy=trainer_strategy,
+                    checkpoint_callback=checkpoint_callback,
+                    lr_monitor=lr_monitor,
+                    logger=logger,
+                )
+                trainer.fit(
+                    model=system,
+                    train_dataloaders=train_loader,
+                    val_dataloaders=val_loader,
+                )
+            else:
+                raise
 
         save_every = _cfg_int("save_every")
         if iteration % save_every == 0:
