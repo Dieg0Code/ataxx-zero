@@ -67,6 +67,14 @@ CONFIG: dict[str, int | float | bool | str] = {
     "trainer_log_every_n_steps": 10,
     "trainer_devices": 1,
     "trainer_strategy": "auto",
+    "opponent_self_prob": 0.8,
+    "opponent_heuristic_prob": 0.15,
+    "opponent_random_prob": 0.05,
+    "opponent_heuristic_level": "normal",
+    "opponent_heuristic_easy_prob": 0.2,
+    "opponent_heuristic_normal_prob": 0.5,
+    "opponent_heuristic_hard_prob": 0.3,
+    "model_side_swap_prob": 0.5,
 }
 
 
@@ -90,6 +98,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-log-versions", type=int, default=None)
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--strategy", default=None)
+    parser.add_argument("--opp-self", type=float, default=None)
+    parser.add_argument("--opp-heuristic", type=float, default=None)
+    parser.add_argument("--opp-random", type=float, default=None)
+    parser.add_argument(
+        "--opp-heuristic-level",
+        choices=["easy", "normal", "hard"],
+        default=None,
+    )
+    parser.add_argument("--opp-heu-easy", type=float, default=None)
+    parser.add_argument("--opp-heu-normal", type=float, default=None)
+    parser.add_argument("--opp-heu-hard", type=float, default=None)
+    parser.add_argument("--model-swap-prob", type=float, default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--hf", action="store_true")
     parser.add_argument("--hf-repo-id", default=None)
@@ -131,6 +151,22 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["trainer_devices"] = max(1, args.devices)
     if args.strategy is not None:
         CONFIG["trainer_strategy"] = args.strategy
+    if args.opp_self is not None:
+        CONFIG["opponent_self_prob"] = max(0.0, args.opp_self)
+    if args.opp_heuristic is not None:
+        CONFIG["opponent_heuristic_prob"] = max(0.0, args.opp_heuristic)
+    if args.opp_random is not None:
+        CONFIG["opponent_random_prob"] = max(0.0, args.opp_random)
+    if args.opp_heuristic_level is not None:
+        CONFIG["opponent_heuristic_level"] = args.opp_heuristic_level
+    if args.opp_heu_easy is not None:
+        CONFIG["opponent_heuristic_easy_prob"] = max(0.0, args.opp_heu_easy)
+    if args.opp_heu_normal is not None:
+        CONFIG["opponent_heuristic_normal_prob"] = max(0.0, args.opp_heu_normal)
+    if args.opp_heu_hard is not None:
+        CONFIG["opponent_heuristic_hard_prob"] = max(0.0, args.opp_heu_hard)
+    if args.model_swap_prob is not None:
+        CONFIG["model_side_swap_prob"] = min(max(args.model_swap_prob, 0.0), 1.0)
     if args.quiet:
         CONFIG["show_progress_bar"] = False
         CONFIG["trainer_log_every_n_steps"] = 100
@@ -428,11 +464,116 @@ def _select_action_idx(
     return int(np.argmax(probs))
 
 
+def _score_move_for_player(board: AtaxxBoard, move: tuple[int, int, int, int]) -> float:
+    r1, c1, r2, c2 = move
+    board_size = int(board.grid.shape[0])
+    jump = 1 if max(abs(r2 - r1), abs(c2 - c1)) == 2 else 0
+    r_min = max(0, r2 - 1)
+    r_max = min(board_size, r2 + 2)
+    c_min = max(0, c2 - 1)
+    c_max = min(board_size, c2 + 2)
+    neighborhood = board.grid[r_min:r_max, c_min:c_max]
+    converted = float(np.sum(neighborhood == -board.current_player))
+    center = float(board_size - 1) / 2.0
+    center_bonus = 0.35 * ((board_size - 1) - abs(r2 - center) - abs(c2 - center))
+    return converted + center_bonus - 0.55 * float(jump)
+
+
+def _heuristic_move(
+    board: AtaxxBoard,
+    rng: np.random.Generator,
+    level: str,
+) -> tuple[int, int, int, int] | None:
+    moves = board.get_valid_moves()
+    if len(moves) == 0:
+        return None
+    if level == "easy":
+        return moves[int(rng.integers(0, len(moves)))]
+
+    scored = sorted(
+        ((move, _score_move_for_player(board, move)) for move in moves),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    if level == "hard":
+        top_k = max(1, min(3, len(scored)))
+    else:
+        top_k = max(1, min(5, len(scored)))
+    weights = np.linspace(1.0, 0.35, top_k, dtype=np.float64)
+    weights = weights / np.sum(weights)
+    pick = int(rng.choice(top_k, p=weights))
+    return scored[pick][0]
+
+
+def _random_move(
+    board: AtaxxBoard,
+    rng: np.random.Generator,
+) -> tuple[int, int, int, int] | None:
+    moves = board.get_valid_moves()
+    if len(moves) == 0:
+        return None
+    return moves[int(rng.integers(0, len(moves)))]
+
+
+def _resolve_opponent_mix() -> tuple[np.ndarray, tuple[str, str, str]]:
+    labels = ("self", "heuristic", "random")
+    raw = np.array(
+        [
+            _cfg_float("opponent_self_prob"),
+            _cfg_float("opponent_heuristic_prob"),
+            _cfg_float("opponent_random_prob"),
+        ],
+        dtype=np.float64,
+    )
+    raw = np.maximum(raw, 0.0)
+    total = float(np.sum(raw))
+    if total <= 0.0:
+        return np.array([1.0, 0.0, 0.0], dtype=np.float64), labels
+    return raw / total, labels
+
+
+def _sample_opponent_type(rng: np.random.Generator) -> str:
+    probs, labels = _resolve_opponent_mix()
+    idx = int(rng.choice(len(labels), p=probs))
+    return labels[idx]
+
+
+def _resolve_heuristic_level_mix() -> tuple[np.ndarray, tuple[str, str, str]]:
+    levels = ("easy", "normal", "hard")
+    raw = np.array(
+        [
+            _cfg_float("opponent_heuristic_easy_prob"),
+            _cfg_float("opponent_heuristic_normal_prob"),
+            _cfg_float("opponent_heuristic_hard_prob"),
+        ],
+        dtype=np.float64,
+    )
+    raw = np.maximum(raw, 0.0)
+    total = float(np.sum(raw))
+    if total <= 0.0:
+        fallback = _cfg_str("opponent_heuristic_level")
+        if fallback == "easy":
+            return np.array([1.0, 0.0, 0.0], dtype=np.float64), levels
+        if fallback == "hard":
+            return np.array([0.0, 0.0, 1.0], dtype=np.float64), levels
+        return np.array([0.0, 1.0, 0.0], dtype=np.float64), levels
+    return raw / total, levels
+
+
+def _sample_heuristic_level(rng: np.random.Generator) -> str:
+    probs, levels = _resolve_heuristic_level_mix()
+    idx = int(rng.choice(len(levels), p=probs))
+    return levels[idx]
+
+
 def _play_episode(
     mcts: MCTS,
     add_noise: bool,
     temp_threshold: int,
     rng: np.random.Generator,
+    opponent_type: str,
+    opponent_heuristic_level: str,
+    model_player: int,
 ) -> tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]:
     from game.actions import ACTION_SPACE
     from game.board import AtaxxBoard
@@ -443,22 +584,35 @@ def _play_episode(
 
     while not board.is_game_over():
         turn_idx += 1
-        temperature = 1.0 if turn_idx <= temp_threshold else 0.0
-        probs = _compute_action_probs(
-            board=board,
-            mcts=mcts,
-            add_noise=add_noise,
-            temperature=temperature,
-        )
-        game_history.append(
-            (
-                board.get_observation(),
-                probs.astype(np.float32),
-                board.current_player,
+        is_model_turn = board.current_player == model_player
+        if is_model_turn or opponent_type == "self":
+            temperature = 1.0 if turn_idx <= temp_threshold else 0.0
+            probs = _compute_action_probs(
+                board=board,
+                mcts=mcts,
+                add_noise=(add_noise and is_model_turn),
+                temperature=temperature,
             )
-        )
-        action_idx = _select_action_idx(probs=probs, temperature=temperature, rng=rng)
-        board.step(ACTION_SPACE.decode(action_idx))
+            game_history.append(
+                (
+                    board.get_observation(),
+                    probs.astype(np.float32),
+                    board.current_player,
+                )
+            )
+            action_idx = _select_action_idx(
+                probs=probs,
+                temperature=temperature,
+                rng=rng,
+            )
+            board.step(ACTION_SPACE.decode(action_idx))
+            continue
+
+        if opponent_type == "heuristic":
+            board.step(_heuristic_move(board, rng, opponent_heuristic_level))
+            continue
+
+        board.step(_random_move(board, rng))
 
     return game_history, board.get_result(), turn_idx
 
@@ -510,8 +664,18 @@ def execute_self_play(
     episodes = _cfg_int("episodes_per_iter")
     temp_threshold = _cfg_int("temp_threshold")
     add_noise = _cfg_bool("add_noise")
-    rng = np.random.default_rng(seed=_cfg_int("seed"))
+    rng = np.random.default_rng(seed=_cfg_int("seed") + iteration)
     _log(f"[Iteration {iteration}] Self-play episodes: {episodes}")
+    mix_probs, mix_labels = _resolve_opponent_mix()
+    mix_text = ", ".join(
+        f"{name}={prob:.2f}" for name, prob in zip(mix_labels, mix_probs, strict=True)
+    )
+    _log(f"  Opponent mix: {mix_text}")
+    level_probs, level_labels = _resolve_heuristic_level_mix()
+    level_text = ", ".join(
+        f"{name}={prob:.2f}" for name, prob in zip(level_labels, level_probs, strict=True)
+    )
+    _log(f"  Heuristic levels: {level_text}")
 
     stats: dict[str, float | int] = {
         "wins_p1": 0,
@@ -519,14 +683,31 @@ def execute_self_play(
         "draws": 0,
         "total_turns": 0,
         "avg_game_length": 0.0,
+        "episodes_vs_self": 0,
+        "episodes_vs_heuristic": 0,
+        "episodes_vs_random": 0,
+        "episodes_vs_heuristic_easy": 0,
+        "episodes_vs_heuristic_normal": 0,
+        "episodes_vs_heuristic_hard": 0,
     }
 
     for episode_idx in range(episodes):
+        opponent_type = _sample_opponent_type(rng)
+        stats[f"episodes_vs_{opponent_type}"] = int(stats[f"episodes_vs_{opponent_type}"]) + 1
+        heuristic_level = _sample_heuristic_level(rng)
+        if opponent_type == "heuristic":
+            stats[f"episodes_vs_heuristic_{heuristic_level}"] = int(
+                stats[f"episodes_vs_heuristic_{heuristic_level}"]
+            ) + 1
+        model_player = 1 if float(rng.random()) >= _cfg_float("model_side_swap_prob") else -1
         game_history, winner, turn_idx = _play_episode(
             mcts=mcts,
             add_noise=add_noise,
             temp_threshold=temp_threshold,
             rng=rng,
+            opponent_type=opponent_type,
+            opponent_heuristic_level=heuristic_level,
+            model_player=model_player,
         )
         _update_stats(stats=stats, winner=winner, turn_idx=turn_idx)
         buffer.save_game(_history_to_examples(game_history=game_history, winner=winner))
@@ -676,6 +857,7 @@ def main() -> None:
             lr_monitor=lr_monitor,
             logger=logger,
         )
+        system.train()
         try:
             trainer.fit(
                 model=system,
@@ -699,6 +881,7 @@ def main() -> None:
                     lr_monitor=lr_monitor,
                     logger=logger,
                 )
+                system.train()
                 trainer.fit(
                     model=system,
                     train_dataloaders=train_loader,

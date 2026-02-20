@@ -59,6 +59,14 @@ Training flags:
 - `--keep-log-versions <int>` TensorBoard versions to keep
 - `--devices <int>` trainer devices (GPUs/accelerator processes)
 - `--strategy <name>` Lightning strategy (`auto`, `ddp`, etc.)
+- `--opp-self <float>` peso de oponente `self` (modelo vs sí mismo)
+- `--opp-heuristic <float>` peso de oponente heurístico
+- `--opp-random <float>` peso de oponente aleatorio
+- `--opp-heuristic-level {easy,normal,hard}` nivel del heurístico en el pool
+- `--opp-heu-easy <float>` peso de `easy` dentro del pool heurístico
+- `--opp-heu-normal <float>` peso de `normal` dentro del pool heurístico
+- `--opp-heu-hard <float>` peso de `hard` dentro del pool heurístico
+- `--model-swap-prob <float>` probabilidad de cambiar de lado (P1/P2) por episodio
 - `--verbose`
 - `--hf` enable Hugging Face upload
 - `--hf-repo-id <org_or_user/repo>`
@@ -81,6 +89,12 @@ Kaggle 2x T4 (use both GPUs):
 
 ```bash
 uv run python train.py --no-onnx --quiet --devices 2 --strategy ddp --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3
+```
+
+Kaggle estable con `opponent pool` (recomendado):
+
+```bash
+uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.80 --opp-heuristic 0.15 --opp-random 0.05 --opp-heu-easy 0.20 --opp-heu-normal 0.50 --opp-heu-hard 0.30 --model-swap-prob 0.5
 ```
 
 If your environment is missing ONNX tooling, use:
