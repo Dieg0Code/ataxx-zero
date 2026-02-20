@@ -65,6 +65,7 @@ CONFIG: dict[str, int | float | bool | str] = {
     "hf_local_dir": "hf_checkpoints",
     "show_progress_bar": True,
     "trainer_log_every_n_steps": 10,
+    "num_workers": 0,
     "trainer_devices": 1,
     "trainer_strategy": "auto",
     "opponent_self_prob": 0.8,
@@ -98,6 +99,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-log-versions", type=int, default=None)
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--strategy", default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--opp-self", type=float, default=None)
     parser.add_argument("--opp-heuristic", type=float, default=None)
     parser.add_argument("--opp-random", type=float, default=None)
@@ -151,6 +153,8 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["trainer_devices"] = max(1, args.devices)
     if args.strategy is not None:
         CONFIG["trainer_strategy"] = args.strategy
+    if args.num_workers is not None:
+        CONFIG["num_workers"] = max(0, args.num_workers)
     if args.opp_self is not None:
         CONFIG["opponent_self_prob"] = max(0.0, args.opp_self)
     if args.opp_heuristic is not None:
@@ -831,7 +835,7 @@ def main() -> None:
             train_dataset,
             batch_size=_cfg_int("batch_size"),
             shuffle=True,
-            num_workers=0,
+            num_workers=_cfg_int("num_workers"),
             pin_memory=(device == "cuda"),
         )
 
@@ -841,7 +845,7 @@ def main() -> None:
                 val_dataset,
                 batch_size=_cfg_int("batch_size"),
                 shuffle=False,
-                num_workers=0,
+                num_workers=_cfg_int("num_workers"),
                 pin_memory=(device == "cuda"),
             )
             if len(val_dataset) > 0
