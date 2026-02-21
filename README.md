@@ -59,6 +59,15 @@ Training flags:
 - `--keep-log-versions <int>` TensorBoard versions to keep
 - `--devices <int>` trainer devices (GPUs/accelerator processes)
 - `--strategy <name>` Lightning strategy (`auto`, `ddp`, etc.)
+- `--num-workers <int>` workers para DataLoader
+- `--persistent-workers` mantiene workers vivos entre épocas (si `num-workers > 0`)
+- `--no-persistent-workers` desactiva lo anterior
+- `--strict-probs` valida que los porcentajes sumen 1.0 exacto
+- `--no-eval` desactiva evaluacion periodica
+- `--eval-every <int>` cada cuantas iteraciones evaluar
+- `--eval-games <int>` numero de partidas de evaluacion
+- `--eval-sims <int>` simulaciones MCTS durante evaluacion
+- `--eval-heuristic-level {easy,normal,hard}` rival heuristico para evaluacion
 - `--opp-self <float>` peso de oponente `self` (modelo vs sí mismo)
 - `--opp-heuristic <float>` peso de oponente heurístico
 - `--opp-random <float>` peso de oponente aleatorio
@@ -95,6 +104,12 @@ Kaggle estable con `opponent pool` (recomendado):
 
 ```bash
 uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.80 --opp-heuristic 0.15 --opp-random 0.05 --opp-heu-easy 0.20 --opp-heu-normal 0.50 --opp-heu-hard 0.30 --model-swap-prob 0.5
+```
+
+Kaggle estable + evaluacion automatica + best checkpoint:
+
+```bash
+uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --num-workers 3 --persistent-workers --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --strict-probs --eval-every 3 --eval-games 12 --eval-sims 220 --eval-heuristic-level hard --opp-self 0.85 --opp-heuristic 0.12 --opp-random 0.03 --opp-heu-easy 0.05 --opp-heu-normal 0.20 --opp-heu-hard 0.75 --model-swap-prob 0.5
 ```
 
 If your environment is missing ONNX tooling, use:

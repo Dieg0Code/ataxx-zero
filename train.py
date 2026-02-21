@@ -66,6 +66,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "show_progress_bar": True,
     "trainer_log_every_n_steps": 10,
     "num_workers": 0,
+    "persistent_workers": True,
+    "strict_probs": False,
     "trainer_devices": 1,
     "trainer_strategy": "auto",
     "opponent_self_prob": 0.8,
@@ -76,6 +78,11 @@ CONFIG: dict[str, int | float | bool | str] = {
     "opponent_heuristic_normal_prob": 0.5,
     "opponent_heuristic_hard_prob": 0.3,
     "model_side_swap_prob": 0.5,
+    "eval_enabled": True,
+    "eval_every": 3,
+    "eval_games": 12,
+    "eval_sims": 220,
+    "eval_heuristic_level": "hard",
 }
 
 
@@ -100,6 +107,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--strategy", default=None)
     parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--persistent-workers", action="store_true")
+    parser.add_argument("--no-persistent-workers", action="store_true")
+    parser.add_argument("--strict-probs", action="store_true")
     parser.add_argument("--opp-self", type=float, default=None)
     parser.add_argument("--opp-heuristic", type=float, default=None)
     parser.add_argument("--opp-random", type=float, default=None)
@@ -112,6 +122,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--opp-heu-normal", type=float, default=None)
     parser.add_argument("--opp-heu-hard", type=float, default=None)
     parser.add_argument("--model-swap-prob", type=float, default=None)
+    parser.add_argument("--no-eval", action="store_true")
+    parser.add_argument("--eval-every", type=int, default=None)
+    parser.add_argument("--eval-games", type=int, default=None)
+    parser.add_argument("--eval-sims", type=int, default=None)
+    parser.add_argument(
+        "--eval-heuristic-level",
+        choices=["easy", "normal", "hard"],
+        default=None,
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--hf", action="store_true")
     parser.add_argument("--hf-repo-id", default=None)
@@ -119,6 +138,8 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _apply_cli_overrides(args: argparse.Namespace) -> None:
+    if args.persistent_workers and args.no_persistent_workers:
+        raise ValueError("Use only one of --persistent-workers or --no-persistent-workers.")
     if args.iterations is not None:
         CONFIG["iterations"] = args.iterations
     if args.episodes is not None:
@@ -155,6 +176,12 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["trainer_strategy"] = args.strategy
     if args.num_workers is not None:
         CONFIG["num_workers"] = max(0, args.num_workers)
+    if args.persistent_workers:
+        CONFIG["persistent_workers"] = True
+    if args.no_persistent_workers:
+        CONFIG["persistent_workers"] = False
+    if args.strict_probs:
+        CONFIG["strict_probs"] = True
     if args.opp_self is not None:
         CONFIG["opponent_self_prob"] = max(0.0, args.opp_self)
     if args.opp_heuristic is not None:
@@ -171,6 +198,16 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["opponent_heuristic_hard_prob"] = max(0.0, args.opp_heu_hard)
     if args.model_swap_prob is not None:
         CONFIG["model_side_swap_prob"] = min(max(args.model_swap_prob, 0.0), 1.0)
+    if args.no_eval:
+        CONFIG["eval_enabled"] = False
+    if args.eval_every is not None:
+        CONFIG["eval_every"] = max(1, args.eval_every)
+    if args.eval_games is not None:
+        CONFIG["eval_games"] = max(2, args.eval_games)
+    if args.eval_sims is not None:
+        CONFIG["eval_sims"] = max(8, args.eval_sims)
+    if args.eval_heuristic_level is not None:
+        CONFIG["eval_heuristic_level"] = args.eval_heuristic_level
     if args.quiet:
         CONFIG["show_progress_bar"] = False
         CONFIG["trainer_log_every_n_steps"] = 100
@@ -196,6 +233,57 @@ def _cfg_bool(key: str) -> bool:
 
 def _cfg_str(key: str) -> str:
     return str(CONFIG[key])
+
+
+def _validate_config() -> None:
+    int_positive_keys = (
+        "iterations",
+        "episodes_per_iter",
+        "mcts_sims",
+        "epochs",
+        "batch_size",
+        "save_every",
+        "eval_every",
+        "eval_games",
+        "eval_sims",
+    )
+    for key in int_positive_keys:
+        if _cfg_int(key) <= 0:
+            raise ValueError(f"CONFIG['{key}'] must be > 0, got {_cfg_int(key)}.")
+    if _cfg_int("num_workers") < 0:
+        raise ValueError("CONFIG['num_workers'] must be >= 0.")
+
+    opp_sum = (
+        _cfg_float("opponent_self_prob")
+        + _cfg_float("opponent_heuristic_prob")
+        + _cfg_float("opponent_random_prob")
+    )
+    heu_sum = (
+        _cfg_float("opponent_heuristic_easy_prob")
+        + _cfg_float("opponent_heuristic_normal_prob")
+        + _cfg_float("opponent_heuristic_hard_prob")
+    )
+    if _cfg_bool("strict_probs"):
+        if not np.isclose(opp_sum, 1.0, atol=1e-6):
+            raise ValueError(
+                "Opponent probs must sum to 1.0 when --strict-probs is enabled "
+                f"(got {opp_sum:.6f}).",
+            )
+        if not np.isclose(heu_sum, 1.0, atol=1e-6):
+            raise ValueError(
+                "Heuristic level probs must sum to 1.0 when --strict-probs is enabled "
+                f"(got {heu_sum:.6f}).",
+            )
+    if not _cfg_bool("strict_probs") and not np.isclose(opp_sum, 1.0, atol=1e-6):
+        _log(
+            f"Opponent probs sum to {opp_sum:.6f}; they will be normalized automatically.",
+            verbose_only=True,
+        )
+    if not _cfg_bool("strict_probs") and not np.isclose(heu_sum, 1.0, atol=1e-6):
+        _log(
+            f"Heuristic level probs sum to {heu_sum:.6f}; they will be normalized automatically.",
+            verbose_only=True,
+        )
 
 
 def _log(message: str, verbose_only: bool = False) -> None:
@@ -648,6 +736,79 @@ def _history_to_examples(
     return examples
 
 
+def _play_eval_episode(
+    mcts: MCTS,
+    rng: np.random.Generator,
+    heuristic_level: str,
+) -> int:
+    from game.actions import ACTION_SPACE
+    from game.board import AtaxxBoard
+
+    board = AtaxxBoard()
+    model_player = 1 if float(rng.random()) >= 0.5 else -1
+    while not board.is_game_over():
+        if board.current_player == model_player:
+            probs = _compute_action_probs(
+                board=board,
+                mcts=mcts,
+                add_noise=False,
+                temperature=0.0,
+            )
+            action_idx = int(np.argmax(probs))
+            board.step(ACTION_SPACE.decode(action_idx))
+            continue
+        board.step(_heuristic_move(board, rng, heuristic_level))
+    winner = board.get_result()
+    if winner == model_player:
+        return 1
+    if winner == 0:
+        return 0
+    return -1
+
+
+def evaluate_model(
+    system: AtaxxZero,
+    device: str,
+    games: int,
+    sims: int,
+    c_puct: float,
+    heuristic_level: str,
+    seed: int,
+) -> dict[str, float | int]:
+    from engine.mcts import MCTS
+
+    system.eval()
+    system.to(device)
+    mcts = MCTS(
+        model=system.model,
+        c_puct=c_puct,
+        n_simulations=sims,
+        device=device,
+    )
+    rng = np.random.default_rng(seed=seed)
+    wins = 0
+    losses = 0
+    draws = 0
+    for _ in range(games):
+        outcome = _play_eval_episode(mcts, rng, heuristic_level)
+        if outcome > 0:
+            wins += 1
+        elif outcome < 0:
+            losses += 1
+        else:
+            draws += 1
+    score = (wins + 0.5 * draws) / max(1, games)
+    return {
+        "games": games,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "score": score,
+        "heuristic_level": heuristic_level,
+        "sims": sims,
+    }
+
+
 def execute_self_play(
     system: AtaxxZero,
     buffer: ReplayBuffer,
@@ -762,6 +923,7 @@ def export_onnx(model: torch.nn.Module, path: str, device: str) -> None:
 def main() -> None:
     args = _parse_args()
     _apply_cli_overrides(args)
+    _validate_config()
     _ensure_src_on_path()
     from data.dataset import AtaxxDataset, ValidationDataset
     from data.replay_buffer import ReplayBuffer
@@ -820,6 +982,7 @@ def main() -> None:
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     logger = TensorBoardLogger(save_dir=str(log_dir), name="ataxx_zero")
+    best_eval_score = -1.0
 
     for iteration in range(start_iteration + 1, iterations + 1):
         _log(f"=== Iteration {iteration}/{iterations} ===")
@@ -836,6 +999,9 @@ def main() -> None:
             batch_size=_cfg_int("batch_size"),
             shuffle=True,
             num_workers=_cfg_int("num_workers"),
+            persistent_workers=(
+                _cfg_bool("persistent_workers") and _cfg_int("num_workers") > 0
+            ),
             pin_memory=(device == "cuda"),
         )
 
@@ -846,6 +1012,9 @@ def main() -> None:
                 batch_size=_cfg_int("batch_size"),
                 shuffle=False,
                 num_workers=_cfg_int("num_workers"),
+                persistent_workers=(
+                    _cfg_bool("persistent_workers") and _cfg_int("num_workers") > 0
+                ),
                 pin_memory=(device == "cuda"),
             )
             if len(val_dataset) > 0
@@ -894,6 +1063,32 @@ def main() -> None:
             else:
                 raise
 
+        eval_stats: dict[str, float | int] | None = None
+        if _cfg_bool("eval_enabled") and iteration % _cfg_int("eval_every") == 0:
+            try:
+                eval_stats = evaluate_model(
+                    system=system,
+                    device=device,
+                    games=_cfg_int("eval_games"),
+                    sims=_cfg_int("eval_sims"),
+                    c_puct=_cfg_float("c_puct"),
+                    heuristic_level=_cfg_str("eval_heuristic_level"),
+                    seed=_cfg_int("seed") + 10_000 + iteration,
+                )
+                _log(
+                    "Eval summary: "
+                    f"W={eval_stats['wins']} L={eval_stats['losses']} D={eval_stats['draws']} "
+                    f"score={float(eval_stats['score']):.3f} "
+                    f"vs {eval_stats['heuristic_level']} (sims={eval_stats['sims']})"
+                )
+                if float(eval_stats["score"]) > best_eval_score:
+                    best_eval_score = float(eval_stats["score"])
+                    best_path = checkpoint_dir / "best_eval.ckpt"
+                    trainer.save_checkpoint(str(best_path))
+                    _log(f"New best checkpoint saved: {best_path}")
+            except Exception as exc:
+                _log(f"Eval failed this iteration, continuing training: {exc}")
+
         save_every = _cfg_int("save_every")
         if iteration % save_every == 0:
             manual_ckpt = checkpoint_dir / f"manual_iter_{iteration:03d}.ckpt"
@@ -914,7 +1109,11 @@ def main() -> None:
                         system=system,
                         buffer=buffer,
                         config=CONFIG,
-                        stats={"replay_size": len(buffer)},
+                        stats={
+                            "replay_size": len(buffer),
+                            "best_eval_score": best_eval_score,
+                            **(eval_stats or {}),
+                        },
                     )
                     hf_checkpointer.cleanup_local_checkpoints(
                         keep_last_n=_cfg_int("keep_last_n_hf_checkpoints")
