@@ -1,0 +1,14 @@
+:root[data-theme="terminal-neo"] {
+  --bg-0: #040404;
+  --bg-1: #0a0a0a;
+  --surface: #111113;
+  --line: #232327;
+  --text-main: #fafafa;
+  --text-dim: #a1a1aa;
+  --primary-green: #f4f4f5;
+  --primary-green-soft: #d4d4d8;
+  --accent-amber: #e4e4e7;
+  --accent-orange: #c4c4c8;
+  --accent-red: #f5f5f5;
+  --accent-cyan: #d4d4d8;
+}

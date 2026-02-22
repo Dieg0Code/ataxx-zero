@@ -7,8 +7,9 @@ import torch
 from torch.utils.data import Dataset
 
 from data.replay_buffer import ReplayBuffer
-from game.actions import ACTION_SPACE, Move
+from game.actions import ACTION_SPACE
 from game.constants import BOARD_SIZE
+from game.types import Move
 
 _N_TRANSFORMS = 8
 _POLICY_INDEX_MAPS: np.ndarray | None = None

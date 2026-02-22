@@ -1,0 +1,14 @@
+:root[data-theme="amber-crt"] {
+  --bg-0: #070707;
+  --bg-1: #101011;
+  --surface: #171719;
+  --line: #2a2a2f;
+  --text-main: #f5f5f5;
+  --text-dim: #a3a3a8;
+  --primary-green: #f0f0f2;
+  --primary-green-soft: #d0d0d4;
+  --accent-amber: #dfdfe3;
+  --accent-orange: #b9b9bf;
+  --accent-red: #eeeeef;
+  --accent-cyan: #cdced3;
+}

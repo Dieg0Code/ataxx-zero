@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ataxx Python Engineering"
+  short_description: "TDD and strict quality gates for this Ataxx Python repo"
+  default_prompt: "Apply uv-first, TDD-first workflow with mandatory ruff, pyrefly, and pytest checks for all changes in this repository."

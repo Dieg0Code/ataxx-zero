@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ataxx-db
+    environment:
+      POSTGRES_DB: ataxx_zero
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ataxx_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ataxx_zero"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: ataxx-api
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "false"
+      APP_LOG_LEVEL: INFO
+      APP_LOG_JSON: "true"
+      APP_LOG_REQUESTS: "true"
+      APP_CORS_ORIGINS: '["http://localhost:5173"]'
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/ataxx_zero?options=-c%20timezone%3DUTC
+      AUTH_JWT_SECRET: change_me_with_a_long_random_secret
+      MODEL_CHECKPOINT_PATH: /app/checkpoints/last.ckpt
+      INFERENCE_DEVICE: cpu
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+
+volumes:
+  ataxx_pgdata:

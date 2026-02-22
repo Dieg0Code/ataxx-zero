@@ -1,0 +1,29 @@
+:root {
+  --bg-0: #050505;
+  --bg-1: #0a0a0a;
+  --surface: #0f0f10;
+  --line: #222225;
+  --text-main: #fafafa;
+  --text-dim: #a1a1aa;
+  --primary-green: #f4f4f5;
+  --primary-green-soft: #d4d4d8;
+  --accent-amber: #e4e4e7;
+  --accent-orange: #c4c4c8;
+  --accent-red: #f5f5f5;
+  --accent-cyan: #d4d4d8;
+}
+
+:root[data-theme="terminal-neo"] {
+  --bg-0: #070b08;
+  --bg-1: #0d1410;
+  --surface: #121c16;
+  --line: #1e3328;
+  --text-main: #d8ffe6;
+  --text-dim: #8eb79f;
+  --primary-green: #58ff9a;
+  --primary-green-soft: #2bc56b;
+  --accent-amber: #ffb347;
+  --accent-orange: #ff8a3d;
+  --accent-red: #ff5c5c;
+  --accent-cyan: #62d9ff;
+}

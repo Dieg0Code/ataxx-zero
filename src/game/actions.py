@@ -3,8 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .constants import BOARD_SIZE
-
-Move = tuple[int, int, int, int]
+from .types import Move
 
 
 class AtaxxActionSpace:

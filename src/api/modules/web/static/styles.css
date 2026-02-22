@@ -1,0 +1,139 @@
+:root {
+  --bg: #0b1220;
+  --panel: #121b2d;
+  --line: #274268;
+  --cell-a: #152038;
+  --cell-b: #101a30;
+  --text: #dce8ff;
+  --muted: #8ea6cd;
+  --p1: #ff4f6d;
+  --p2: #51b7ff;
+  --pick: #ffd047;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  background: radial-gradient(circle at top, #12203b 0%, var(--bg) 55%);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 560px) 320px;
+  gap: 20px;
+  justify-content: center;
+  padding: 24px;
+}
+
+.board-wrap h1 {
+  margin: 0 0 12px 0;
+  font-size: 1.8rem;
+  letter-spacing: 0.05em;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.cell {
+  width: 80px;
+  height: 80px;
+  border: 1px solid var(--line);
+  background: var(--cell-a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.cell:nth-child(odd) {
+  background: var(--cell-b);
+}
+
+.cell.selected {
+  outline: 3px solid var(--pick);
+  outline-offset: -3px;
+}
+
+.piece {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+
+.piece.p1 {
+  background: var(--p1);
+}
+
+.piece.p2 {
+  background: var(--p2);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0;
+}
+
+select,
+button {
+  background: #0f172a;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.hint {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .cell {
+    width: min(12vw, 72px);
+    height: min(12vw, 72px);
+  }
+  .piece {
+    width: min(9vw, 54px);
+    height: min(9vw, 54px);
+  }
+}

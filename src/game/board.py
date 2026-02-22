@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import numpy.typing as npt
 
 from .constants import (
     BOARD_SIZE,
@@ -12,15 +11,14 @@ from .constants import (
     WIN_P1,
     WIN_P2,
 )
-
-Grid = npt.NDArray[np.int8]
-Move = tuple[int, int, int, int]
+from .rules import is_clone_move, is_jump_move, move_distance, opponent
+from .types import Grid, Move, Player
 
 
 class AtaxxBoard:
     """State and rules for Ataxx."""
 
-    def __init__(self, grid: Grid | None = None, player: int = PLAYER_1) -> None:
+    def __init__(self, grid: Grid | None = None, player: Player = PLAYER_1) -> None:
         self.grid: Grid
         if grid is None:
             self.grid = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
@@ -33,7 +31,7 @@ class AtaxxBoard:
                 )
             self.grid = grid_int8
 
-        self.current_player: int = player
+        self.current_player: Player = player
         # Variant anti-loop rule: hard cap on total half-moves.
         self.half_moves = 0
 
@@ -49,11 +47,7 @@ class AtaxxBoard:
         new_board.half_moves = self.half_moves
         return new_board
 
-    @staticmethod
-    def _opponent(player: int) -> int:
-        return -player
-
-    def _has_move_for(self, player: int) -> bool:
+    def _has_move_for(self, player: Player) -> bool:
         piece_coords = np.argwhere(self.grid == player)
         for r, c in piece_coords:
             r_min, r_max = max(0, r - 2), min(BOARD_SIZE, r + 3)
@@ -62,7 +56,7 @@ class AtaxxBoard:
                 return True
         return False
 
-    def get_valid_moves(self, player: int | None = None) -> list[Move]:
+    def get_valid_moves(self, player: Player | None = None) -> list[Move]:
         """Generate all legal moves for a player."""
         p = self.current_player if player is None else player
         moves: list[Move] = []
@@ -81,7 +75,7 @@ class AtaxxBoard:
 
         return moves
 
-    def has_valid_moves(self, player: int | None = None) -> bool:
+    def has_valid_moves(self, player: Player | None = None) -> bool:
         """Fast check for at least one legal move."""
         p = self.current_player if player is None else player
         return self._has_move_for(p)
@@ -95,7 +89,7 @@ class AtaxxBoard:
         if move is None:
             if self.has_valid_moves():
                 raise ValueError("Pass is illegal when legal moves exist.")
-            self.current_player = self._opponent(self.current_player)
+            self.current_player = opponent(self.current_player)
             self.half_moves += 1
             return
 
@@ -108,28 +102,28 @@ class AtaxxBoard:
         if self.grid[r_end, c_end] != EMPTY:
             raise ValueError(f"Destination ({r_end}, {c_end}) is not empty.")
 
-        dist = max(abs(r_start - r_end), abs(c_start - c_end))
-        if dist == 1:
+        dist = move_distance(r_start, c_start, r_end, c_end)
+        if is_clone_move(dist):
             self.grid[r_end, c_end] = self.current_player
-        elif dist == 2:
+        elif is_jump_move(dist):
             self.grid[r_end, c_end] = self.current_player
             self.grid[r_start, c_start] = EMPTY
         else:
             raise ValueError(f"Illegal move distance: {dist}.")
 
         self._infect_neighbors(r_end, c_end)
-        self.current_player = self._opponent(self.current_player)
+        self.current_player = opponent(self.current_player)
         self.half_moves += 1
 
     def _infect_neighbors(self, r: int, c: int) -> None:
         """Convert adjacent opponent pieces around (r, c)."""
-        opponent = self._opponent(self.current_player)
+        enemy = opponent(self.current_player)
         r_min = max(0, r - 1)
         r_max = min(BOARD_SIZE, r + 2)
         c_min = max(0, c - 1)
         c_max = min(BOARD_SIZE, c + 2)
         window = self.grid[r_min:r_max, c_min:c_max]
-        window[window == opponent] = self.current_player
+        window[window == enemy] = self.current_player
 
     def is_game_over(self) -> bool:
         """
@@ -149,7 +143,7 @@ class AtaxxBoard:
             return True
 
         return not self._has_move_for(self.current_player) and not self._has_move_for(
-            self._opponent(self.current_player)
+            opponent(self.current_player)
         )
 
     def get_result(self) -> int:
@@ -188,7 +182,7 @@ class AtaxxBoard:
         obs = np.zeros((3, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         obs[0] = np.asarray(self.grid == self.current_player, dtype=np.float32)
         obs[1] = np.asarray(
-            self.grid == self._opponent(self.current_player),
+            self.grid == opponent(self.current_player),
             dtype=np.float32,
         )
         obs[2] = np.asarray(self.grid == EMPTY, dtype=np.float32)

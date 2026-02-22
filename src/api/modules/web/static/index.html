@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ataxx Arena Web</title>
+    <link rel="stylesheet" href="/web/static/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="board-wrap">
+        <h1>ATAXX ARENA</h1>
+        <div id="board" class="board" aria-label="Ataxx board"></div>
+      </section>
+      <aside class="panel">
+        <h2>Match</h2>
+        <p id="status">Status: Human turn</p>
+        <p id="score">P1: 2 | P2: 2</p>
+        <label class="row">
+          AI mode
+          <select id="mode">
+            <option value="fast">fast</option>
+            <option value="strong">strong</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button id="reset">New game</button>
+          <button id="aiMove">Force AI move</button>
+        </div>
+        <p class="hint">
+          Human is P1 (red), AI is P2 (blue). Click your piece, then a target
+          square up to 2 cells away.
+        </p>
+      </aside>
+    </main>
+    <script src="/web/static/app.js" defer></script>
+  </body>
+</html>

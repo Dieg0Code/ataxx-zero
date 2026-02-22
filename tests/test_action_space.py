@@ -38,6 +38,12 @@ class TestActionSpace(unittest.TestCase):
         self.assertEqual(pass_idx, ACTION_SPACE.pass_index)
         self.assertIsNone(decoded)
 
+    def test_mask_from_moves_can_include_pass(self) -> None:
+        mask = ACTION_SPACE.mask_from_moves(moves=[], include_pass=True)
+        self.assertEqual(mask.shape[0], ACTION_SPACE.num_actions)
+        self.assertEqual(float(mask[ACTION_SPACE.pass_index]), 1.0)
+        self.assertAlmostEqual(float(mask.sum()), 1.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

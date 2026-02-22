@@ -8,6 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+.env.local
+.env.*.local
 
 checkpoints/
 logs/
+
+# Web frontend
+web/node_modules/
+web/dist/
+web/.vite/

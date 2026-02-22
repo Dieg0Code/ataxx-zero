@@ -39,6 +39,46 @@ uv run python train.py
 
 `train_improved.py` is kept as compatibility wrapper.
 
+## Dependency Profiles (uv)
+
+Use dependency groups so each environment installs only what it needs.
+
+- Base only:
+
+```bash
+uv sync
+```
+
+- API runtime (+dev tools):
+
+```bash
+uv sync --group api --group dev
+```
+
+- Training (+dev tools):
+
+```bash
+uv sync --group train --group dev
+```
+
+- Pygame UI (+dev tools):
+
+```bash
+uv sync --group ui --group dev
+```
+
+- ONNX export (+dev tools):
+
+```bash
+uv sync --group export --group dev
+```
+
+- Full environment (all groups):
+
+```bash
+uv sync --all-groups
+```
+
 Training flags:
 
 - `--iterations <int>`
@@ -273,3 +313,396 @@ Quick rule:
 - `T4`: prioritize shorter runs and checkpoint often.
 - `L4`: use as default if available.
 - `A100`: maximize self-play quality (`--sims`, `--episodes`) and larger batch.
+
+## API (FastAPI)
+
+Install API environment:
+
+```bash
+uv sync --group api --group dev
+```
+
+Run server:
+
+```bash
+uv run uvicorn api.app:app --app-dir src --host 0.0.0.0 --port 8000 --reload
+```
+
+Web UI (browser):
+
+```bash
+http://127.0.0.1:8000/web
+```
+
+The web UI is a first playable version (Human P1 vs AI P2) and calls:
+
+- `POST /api/v1/gameplay/move` for AI decisions.
+
+## Web Frontend (React + Vite + TS + Tailwind)
+
+Scaffold location:
+
+```txt
+web/
+```
+
+Install dependencies:
+
+```bash
+cd web
+npm install
+```
+
+Run in development:
+
+```bash
+npm run dev
+```
+
+Build production assets:
+
+```bash
+npm run build
+```
+
+Design direction:
+
+- Brand: `underbyteLabs - ataxx-zero`
+- Mobile-first layout
+- Public ranking
+- Multi-skin theme system: `terminal-neo`, `amber-crt`, `oxide-red`
+
+### Docker (API + DB)
+
+Build API image (multi-stage, runtime target):
+
+```bash
+docker build -t ataxx-api:latest --target runtime .
+```
+
+Run API + Postgres with compose:
+
+```bash
+docker compose up --build
+```
+
+API will be available at:
+
+```bash
+http://127.0.0.1:8000
+```
+
+Model checkpoint handling in Docker:
+
+- Default compose mounts local `./checkpoints` into container as read-only.
+- API expects checkpoint at `MODEL_CHECKPOINT_PATH` (default `/app/checkpoints/last.ckpt`).
+- If checkpoint is missing, inference endpoints return `503`.
+
+Optional: bake checkpoint into image:
+
+```bash
+docker build -t ataxx-api:with-model --target runtime-with-model .
+```
+
+Then run without checkpoint volume (or keep it mounted).
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Readiness check (includes DB connectivity):
+
+```bash
+curl http://127.0.0.1:8000/health/ready
+```
+
+CORS configuration (via `.env`):
+
+```dotenv
+APP_CORS_ORIGINS=["http://localhost:5173"]
+APP_CORS_ALLOW_CREDENTIALS=true
+APP_CORS_ALLOW_METHODS=["*"]
+APP_CORS_ALLOW_HEADERS=["*"]
+```
+
+Observability configuration (via `.env`):
+
+```dotenv
+APP_LOG_LEVEL="INFO"
+APP_LOG_JSON=true
+APP_LOG_REQUESTS=true
+```
+
+When `APP_LOG_REQUESTS=true`, each request logs method/path/status/duration/request_id.
+
+### Database Migrations (Alembic)
+
+Alembic is configured in this repo for SQLModel metadata under `src/api/db/models`.
+
+Install dependencies:
+
+```bash
+uv sync --group api --group dev
+```
+
+Check migration status:
+
+```bash
+uv run alembic current
+uv run alembic heads
+```
+
+Apply all migrations:
+
+```bash
+uv run alembic upgrade head
+```
+
+Create a new migration after changing models:
+
+```bash
+uv run alembic revision --autogenerate -m "describe change"
+```
+
+Rollback one migration:
+
+```bash
+uv run alembic downgrade -1
+```
+
+PowerShell shortcut script:
+
+```powershell
+.\scripts\db.ps1 up
+.\scripts\db.ps1 down
+.\scripts\db.ps1 new "add user profile fields"
+.\scripts\db.ps1 current
+.\scripts\db.ps1 heads
+```
+
+Notes:
+
+- Alembic reads DB connection from `.env` through `api.config.settings`.
+- Use migrations (`alembic upgrade`) for shared/prod DB.
+- `init_db()` remains useful for isolated tests/local ephemeral DB only.
+
+### API Pagination (offset + limit)
+
+List endpoints now use a common paginated shape:
+
+```json
+{
+  "items": [],
+  "total": 0,
+  "limit": 20,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+Supported list endpoints:
+
+- `GET /api/v1/gameplay/games?limit=20&offset=0`
+- `GET /api/v1/training/samples?limit=100&offset=0`
+- `GET /api/v1/model-versions?limit=50&offset=0`
+- `GET /api/v1/ranking/leaderboard/{season_id}?limit=100&offset=0`
+- `GET /api/v1/identity/users?limit=50&offset=0` (admin)
+
+Examples:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/gameplay/games?limit=10&offset=0" -H "Authorization: Bearer <ACCESS_TOKEN>"
+curl "http://127.0.0.1:8000/api/v1/training/samples?limit=25&offset=25&split=train"
+curl "http://127.0.0.1:8000/api/v1/model-versions?limit=10&offset=0"
+curl "http://127.0.0.1:8000/api/v1/ranking/leaderboard/<SEASON_ID>?limit=20&offset=0"
+curl "http://127.0.0.1:8000/api/v1/identity/users?limit=10&offset=0" -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
+```
+
+Pagination behavior:
+
+- `limit` is clamped per endpoint for safety.
+- `offset` starts at `0`.
+- `has_more=true` means you can request the next page with `offset + limit`.
+
+### Auth Flow (end-to-end)
+
+Register:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/auth/register" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"diego\",\"email\":\"diego@example.com\",\"password\":\"supersecret123\"}"
+```
+
+Login (returns `access_token` + `refresh_token`):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"username_or_email\":\"diego\",\"password\":\"supersecret123\"}"
+```
+
+Sample login response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer",
+  "expires_in": 1800
+}
+```
+
+Get current user (`/me`) with access token:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/auth/me" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+Refresh tokens:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d "{\"refresh_token\":\"<REFRESH_TOKEN>\"}"
+```
+
+Logout (revoke refresh token):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/auth/logout" \
+  -H "Content-Type: application/json" \
+  -d "{\"refresh_token\":\"<REFRESH_TOKEN>\"}"
+```
+
+Notes:
+
+- Send `Authorization: Bearer <ACCESS_TOKEN>` to protected endpoints.
+- After `refresh`, prefer replacing both stored tokens.
+- `logout` revokes refresh token; current access token remains valid until expiry.
+- `login` and `refresh` are rate-limited (returns `429` + `Retry-After` header).
+
+Auth error examples (standard error envelope):
+
+401 Unauthorized (missing/invalid token):
+
+```json
+{
+  "error_code": "unauthorized",
+  "message": "Not authenticated",
+  "detail": "Not authenticated",
+  "request_id": "req-123"
+}
+```
+
+403 Forbidden (insufficient permissions):
+
+```json
+{
+  "error_code": "forbidden",
+  "message": "Admin privileges required.",
+  "detail": "Admin privileges required.",
+  "request_id": "req-456"
+}
+```
+
+422 Validation Error (invalid payload):
+
+```json
+{
+  "error_code": "validation_error",
+  "message": "Validation failed",
+  "detail": "Validation failed",
+  "request_id": "req-789",
+  "details": [
+    {
+      "type": "missing",
+      "loc": ["body", "password"],
+      "msg": "Field required",
+      "input": {}
+    }
+  ]
+}
+```
+
+Gameplay/Matches error examples:
+
+400 Bad Request (invalid board / illegal move):
+
+```json
+{
+  "error_code": "bad_request",
+  "message": "Illegal move for current board state.",
+  "detail": "Illegal move for current board state.",
+  "request_id": "req-101"
+}
+```
+
+403 Forbidden (not participant / not your turn):
+
+```json
+{
+  "error_code": "forbidden",
+  "message": "It is not your turn.",
+  "detail": "It is not your turn.",
+  "request_id": "req-102"
+}
+```
+
+404 Not Found (game/match/sample/version missing):
+
+```json
+{
+  "error_code": "not_found",
+  "message": "Game not found: <uuid>",
+  "detail": "Game not found: <uuid>",
+  "request_id": "req-103"
+}
+```
+
+### Training Samples API
+
+Create a game (needed for sample FK):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/gameplay/games -H "Content-Type: application/json" -d "{}"
+```
+
+Create one training sample:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/training/samples -H "Content-Type: application/json" -d "{\"game_id\":\"<GAME_ID>\",\"ply\":0,\"player_side\":\"p1\",\"observation\":{\"grid\":[[0,0,0,0,0,0,0],[0,0,0,0,0,0,0],[0,0,0,0,0,0,0],[0,0,0,0,0,0,0],[0,0,0,0,0,0,0],[0,0,0,0,0,0,0],[0,0,0,0,0,0,0]],\"current_player\":1},\"policy_target\":{\"10\":1.0},\"value_target\":1.0,\"sample_weight\":1.0,\"split\":\"train\",\"source\":\"self_play\"}"
+```
+
+List samples:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/training/samples?limit=50&split=train"
+```
+
+Samples stats:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/training/samples/stats?split=train"
+```
+
+Export samples as NDJSON:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/training/samples/export.ndjson?split=train&limit=500" -o training_samples.ndjson
+```
+
+Export samples as NPZ:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/training/samples/export.npz?split=train&limit=500" -o training_samples.npz
+```
+
+Ingest samples from a finished game:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/training/samples/ingest-game/<GAME_ID>?split=train&source=self_play&overwrite=true"
+```

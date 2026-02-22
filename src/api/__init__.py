@@ -1,0 +1,2 @@
+"""Ataxx Zero API package."""
+

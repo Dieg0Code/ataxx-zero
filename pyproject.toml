@@ -5,15 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "huggingface-hub>=1.4.1",
     "numpy>=2.2.6",
-    "onnx>=1.19.1",
-    "onnxscript>=0.5.4",
-    "pygame>=2.6.1",
     "pytorch-lightning>=2.6.1",
-    "tensorboard>=2.20.0",
     "torch>=2.10.0",
 ]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 88
@@ -46,8 +51,33 @@ indent-style = "space"
 quote-style = "double"
 
 [dependency-groups]
+api = [
+    "fastapi>=0.121.1",
+    "python-jose[cryptography]>=3.5.0",
+    "python-dotenv>=1.2.1",
+    "pydantic-settings>=2.11.0",
+    "passlib[bcrypt]>=1.7.4",
+    "sqlalchemy[asyncio]>=2.0.44",
+    "sqlmodel>=0.0.27",
+    "asyncpg>=0.30.0",
+    "uvicorn[standard]>=0.38.0",
+    "alembic>=1.14.0",
+]
 dev = [
+    "aiosqlite>=0.21.0",
+    "httpx>=0.28.1",
     "pyrefly>=0.52.0",
     "pytest>=9.0.2",
     "ruff>=0.15.1",
+]
+export = [
+    "onnx>=1.19.1",
+    "onnxscript>=0.5.4",
+]
+train = [
+    "huggingface-hub>=1.4.1",
+    "tensorboard>=2.20.0",
+]
+ui = [
+    "pygame>=2.6.1",
 ]

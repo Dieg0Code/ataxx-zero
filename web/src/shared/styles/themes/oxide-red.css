@@ -1,0 +1,14 @@
+:root[data-theme="oxide-red"] {
+  --bg-0: #030303;
+  --bg-1: #09090b;
+  --surface: #121214;
+  --line: #25252b;
+  --text-main: #fafafa;
+  --text-dim: #a1a1aa;
+  --primary-green: #f7f7f8;
+  --primary-green-soft: #d6d6db;
+  --accent-amber: #e5e5e9;
+  --accent-orange: #bebec5;
+  --accent-red: #f2f2f3;
+  --accent-cyan: #d1d1d7;
+}

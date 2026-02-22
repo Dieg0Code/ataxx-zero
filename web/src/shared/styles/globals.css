@@ -1,0 +1,41 @@
+@import "./themes/terminal-neo.css";
+@import "./themes/amber-crt.css";
+@import "./themes/oxide-red.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 520px at 50% -12%, color-mix(in oklab, var(--primary-green) 8%, transparent), transparent 60%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  color: var(--text-main);
+  font-family: "Geist", "JetBrains Mono", "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 280ms ease-out both;
+}
