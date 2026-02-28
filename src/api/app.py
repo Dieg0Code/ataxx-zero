@@ -12,6 +12,7 @@ from api.modules.gameplay.router import router as gameplay_router
 from api.modules.health.router import router as health_router
 from api.modules.identity.router import router as identity_router
 from api.modules.matches.router import router as matches_router
+from api.modules.matchmaking.router import router as matchmaking_router
 from api.modules.model_versions.router import router as model_versions_router
 from api.modules.ranking.router import router as ranking_router
 from api.modules.training_samples.router import router as training_samples_router
@@ -55,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(gameplay_router, prefix="/api/v1")
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(matches_router, prefix="/api/v1")
+    app.include_router(matchmaking_router, prefix="/api/v1")
     app.include_router(model_versions_router, prefix="/api/v1")
     app.include_router(ranking_router, prefix="/api/v1")
     app.include_router(training_samples_router, prefix="/api/v1")

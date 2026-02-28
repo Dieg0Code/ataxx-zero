@@ -5,18 +5,21 @@ import sys
 import tempfile
 import unittest
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from api.app import create_app
 from api.db import models as _models
-from api.db.models import User
+from api.db.enums import AgentType
+from api.db.models import BotProfile, RatingEvent, Season, User
 from api.db.session import get_session
 from api.deps.inference import get_inference_service_dep
 from game.actions import ACTION_SPACE
@@ -182,6 +185,358 @@ class TestApiGamesIntegration(unittest.TestCase):
         self.assertEqual(len(replay["moves"]), 1)
         self.assertEqual(replay["moves"][0]["game_id"], game_id)
 
+    def test_list_games_can_filter_by_status(self) -> None:
+        user = self._register_and_login("gp-filter", "gp-filter@example.com")
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={"queue_type": "casual"},
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        game_id = create_resp.json()["id"]
+
+        list_finished = self.client.get(
+            "/api/v1/gameplay/games?limit=10&status=finished",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(list_finished.status_code, 200)
+        payload_finished = list_finished.json()
+        ids_finished = {entry["id"] for entry in payload_finished["items"]}
+        self.assertNotIn(game_id, ids_finished)
+
+        list_pending = self.client.get(
+            "/api/v1/gameplay/games?limit=10&status=pending",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(list_pending.status_code, 200)
+        payload_pending = list_pending.json()
+        ids_pending = {entry["id"] for entry in payload_pending["items"]}
+        self.assertIn(game_id, ids_pending)
+
+    def test_creator_can_control_bot_vs_bot_game(self) -> None:
+        creator = self._register_and_login("gp-owner", "gp-owner@example.com")
+        outsider = self._register_and_login("gp-outsider", "gp-outsider@example.com")
+        bot_p1_id = self._create_bot_user_with_profile(
+            username="gp-bot-p1",
+            email="gp-bot-p1@example.com",
+            heuristic_level="easy",
+        )
+        bot_p2_id = self._create_bot_user_with_profile(
+            username="gp-bot-p2",
+            email="gp-bot-p2@example.com",
+            heuristic_level="hard",
+        )
+
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={
+                "queue_type": "casual",
+                "status": "in_progress",
+                "rated": False,
+                "player1_id": bot_p1_id,
+                "player2_id": bot_p2_id,
+                "player1_agent": "heuristic",
+                "player2_agent": "heuristic",
+                "source": "human",
+                "is_training_eligible": False,
+            },
+            headers={"Authorization": f"Bearer {creator['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        created = create_resp.json()
+        self.assertEqual(created["created_by_user_id"], creator["user_id"])
+        game_id = created["id"]
+
+        board = AtaxxBoard()
+        creator_move = self.client.post(
+            f"/api/v1/gameplay/games/{game_id}/move/manual",
+            json={
+                "board": board_to_state(board),
+                "move": {"r1": 0, "c1": 0, "r2": 1, "c2": 1},
+                "mode": "manual",
+            },
+            headers={"Authorization": f"Bearer {creator['access_token']}"},
+        )
+        self.assertEqual(creator_move.status_code, 201)
+
+        outsider_move = self.client.post(
+            f"/api/v1/gameplay/games/{game_id}/move/manual",
+            json={
+                "board": board_to_state(board),
+                "move": {"r1": 0, "c1": 0, "r2": 1, "c2": 1},
+                "mode": "manual",
+            },
+            headers={"Authorization": f"Bearer {outsider['access_token']}"},
+        )
+        self.assertEqual(outsider_move.status_code, 403)
+
+    def test_create_game_rejects_same_player_on_both_sides(self) -> None:
+        creator = self._register_and_login("gp-owner-same", "gp-owner-same@example.com")
+        bot_id = self._create_bot_user_with_profile(
+            username="gp-bot-same",
+            email="gp-bot-same@example.com",
+            heuristic_level="hard",
+        )
+
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={
+                "queue_type": "casual",
+                "status": "in_progress",
+                "rated": False,
+                "player1_id": bot_id,
+                "player2_id": bot_id,
+                "player1_agent": "heuristic",
+                "player2_agent": "heuristic",
+                "source": "human",
+                "is_training_eligible": False,
+            },
+            headers={"Authorization": f"Bearer {creator['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 400)
+        self.assertIn("must be different users", create_resp.json()["detail"])
+
+    def test_create_game_rejects_ranked_ai_vs_ai(self) -> None:
+        creator = self._register_and_login("gp-owner-ranked-ai", "gp-owner-ranked-ai@example.com")
+        bot_p1_id = self._create_bot_user_with_profile(
+            username="gp-bot-ranked-p1",
+            email="gp-bot-ranked-p1@example.com",
+            heuristic_level="easy",
+        )
+        bot_p2_id = self._create_bot_user_with_profile(
+            username="gp-bot-ranked-p2",
+            email="gp-bot-ranked-p2@example.com",
+            heuristic_level="hard",
+        )
+
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={
+                "queue_type": "ranked",
+                "status": "in_progress",
+                "rated": True,
+                "player1_id": bot_p1_id,
+                "player2_id": bot_p2_id,
+                "player1_agent": "heuristic",
+                "player2_agent": "heuristic",
+                "source": "human",
+                "is_training_eligible": False,
+            },
+            headers={"Authorization": f"Bearer {creator['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 400)
+        self.assertIn("solo admite modo casual", create_resp.json()["detail"])
+
+    def test_list_games_skips_invalid_legacy_rows(self) -> None:
+        user = self._register_and_login("gp-u5", "gp-u5@example.com")
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={"queue_type": "casual"},
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        valid_game_id = create_resp.json()["id"]
+        user_id = user["user_id"]
+
+        async def _inject_invalid() -> None:
+            async with self.sessionmaker() as session:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO game (
+                            id, queue_type, status, rated, player1_id, player1_agent, player2_agent,
+                            source, is_training_eligible, created_at
+                        ) VALUES (
+                            :id, :queue_type, :status, :rated, :player1_id, :player1_agent, :player2_agent,
+                            :source, :is_training_eligible, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": "00000000-0000-0000-0000-00000000aaaa",
+                        "queue_type": "casual",
+                        "status": "legacy_broken_status",
+                        "rated": 0,
+                        "player1_id": user_id,
+                        "player1_agent": "human",
+                        "player2_agent": "human",
+                        "source": "human",
+                        "is_training_eligible": 0,
+                        "created_at": "2026-02-23 00:00:00",
+                    },
+                )
+                await session.commit()
+
+        asyncio.run(_inject_invalid())
+
+        list_resp = self.client.get(
+            "/api/v1/gameplay/games?limit=8&offset=0",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(list_resp.status_code, 200)
+        payload = list_resp.json()
+        ids = {row["id"] for row in payload["items"]}
+        self.assertIn(valid_game_id, ids)
+
+    def test_replay_returns_422_for_invalid_legacy_game_row(self) -> None:
+        user = self._register_and_login("gp-u6", "gp-u6@example.com")
+        user_id = user["user_id"]
+        invalid_game_id = "00000000-0000-0000-0000-00000000aab1"
+
+        async def _inject_invalid() -> None:
+            async with self.sessionmaker() as session:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO game (
+                            id, queue_type, status, rated, player1_id, player1_agent, player2_agent,
+                            source, is_training_eligible, created_at
+                        ) VALUES (
+                            :id, :queue_type, :status, :rated, :player1_id, :player1_agent, :player2_agent,
+                            :source, :is_training_eligible, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": invalid_game_id,
+                        "queue_type": "casual",
+                        "status": "legacy_broken_status",
+                        "rated": 0,
+                        "player1_id": user_id,
+                        "player1_agent": "human",
+                        "player2_agent": "human",
+                        "source": "human",
+                        "is_training_eligible": 0,
+                        "created_at": "2026-02-23 00:00:00",
+                    },
+                )
+                await session.commit()
+
+        asyncio.run(_inject_invalid())
+
+        replay_resp = self.client.get(
+            f"/api/v1/gameplay/games/{invalid_game_id}/replay",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertIn(replay_resp.status_code, {404, 422})
+
+    def test_delete_legacy_invalid_game_row_returns_204(self) -> None:
+        user = self._register_and_login("gp-u7", "gp-u7@example.com")
+        user_id = user["user_id"]
+        invalid_game_id = "00000000-0000-0000-0000-00000000aab2"
+
+        async def _inject_invalid() -> None:
+            async with self.sessionmaker() as session:
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO game (
+                            id, queue_type, status, rated, player1_id, player1_agent, player2_agent,
+                            source, is_training_eligible, created_at
+                        ) VALUES (
+                            :id, :queue_type, :status, :rated, :player1_id, :player1_agent, :player2_agent,
+                            :source, :is_training_eligible, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": invalid_game_id,
+                        "queue_type": "casual",
+                        "status": "legacy_broken_status",
+                        "rated": 0,
+                        "player1_id": user_id,
+                        "player1_agent": "human",
+                        "player2_agent": "human",
+                        "source": "human",
+                        "is_training_eligible": 0,
+                        "created_at": "2026-02-23 00:00:00",
+                    },
+                )
+                await session.commit()
+
+        asyncio.run(_inject_invalid())
+
+        delete_resp = self.client.delete(
+            f"/api/v1/gameplay/games/{invalid_game_id}",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertIn(delete_resp.status_code, {204, 404})
+
+    def test_delete_game_with_rating_events_succeeds(self) -> None:
+        user = self._register_and_login("gp-u8", "gp-u8@example.com")
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={"queue_type": "casual"},
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        game_id = create_resp.json()["id"]
+        user_id = user["user_id"]
+
+        async def _insert_dependencies() -> None:
+            async with self.sessionmaker() as session:
+                season = Season(
+                    name="Delete FK Season",
+                    is_active=False,
+                    starts_at=datetime(2026, 2, 1, 0, 0, 0),
+                    ends_at=datetime(2026, 3, 1, 0, 0, 0),
+                )
+                session.add(season)
+                await session.commit()
+                await session.refresh(season)
+
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO ratingevent (
+                            id, game_id, user_id, season_id, rating_before, rating_after, delta, transition_type, created_at
+                        ) VALUES (
+                            :id, :game_id, :user_id, :season_id, :rating_before, :rating_after, :delta, :transition_type, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": "11111111-2222-3333-4444-555555555555",
+                        "game_id": game_id,
+                        "user_id": user_id,
+                        "season_id": str(season.id),
+                        "rating_before": 1200.0,
+                        "rating_after": 1212.0,
+                        "delta": 12.0,
+                        "transition_type": "stable",
+                        "created_at": "2026-02-23 00:00:00",
+                    },
+                )
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO queueentry (
+                            id, season_id, user_id, rating_snapshot, status, matched_game_id, created_at, updated_at
+                        ) VALUES (
+                            :id, :season_id, :user_id, :rating_snapshot, :status, :matched_game_id, :created_at, :updated_at
+                        )
+                        """
+                    ),
+                    {
+                        "id": "66666666-7777-8888-9999-000000000000",
+                        "season_id": str(season.id),
+                        "user_id": user_id,
+                        "rating_snapshot": 1200.0,
+                        "status": "matched",
+                        "matched_game_id": game_id,
+                        "created_at": "2026-02-23 00:00:00",
+                        "updated_at": "2026-02-23 00:00:00",
+                    },
+                )
+                await session.commit()
+        asyncio.run(_insert_dependencies())
+
+        delete_resp = self.client.delete(
+            f"/api/v1/gameplay/games/{game_id}",
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(delete_resp.status_code, 204)
+
     def test_game_is_auto_finished_on_terminal_board(self) -> None:
         user = self._register_and_login("gp-u4", "gp-u4@example.com")
         create_resp = self.client.post(
@@ -229,6 +584,18 @@ class TestApiGamesIntegration(unittest.TestCase):
         self.assertEqual(season_resp.status_code, 201)
         season_id = season_resp.json()["id"]
 
+        # Bootstrap initial ratings and recompute leaderboard once so we can
+        # verify it gets refreshed after the rated result is applied.
+        bootstrap_p1 = self.client.get(f"/api/v1/ranking/ratings/{p1_id}/{season_id}")
+        bootstrap_p2 = self.client.get(f"/api/v1/ranking/ratings/{p2_id}/{season_id}")
+        self.assertEqual(bootstrap_p1.status_code, 200)
+        self.assertEqual(bootstrap_p2.status_code, 200)
+        recompute_bootstrap = self.client.post(
+            f"/api/v1/ranking/leaderboard/{season_id}/recompute?limit=10",
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(recompute_bootstrap.status_code, 200)
+
         game_resp = self.client.post(
             "/api/v1/gameplay/games",
             json={
@@ -271,9 +638,40 @@ class TestApiGamesIntegration(unittest.TestCase):
         leaderboard = lb_resp.json()["items"]
         self.assertEqual(len(leaderboard), 2)
         self.assertEqual(leaderboard[0]["user_id"], p1_id)
+        self.assertEqual(leaderboard[0]["username"], "rated-p1")
         self.assertEqual(leaderboard[0]["rank"], 1)
+        self.assertIsNotNone(leaderboard[0]["recent_lp_delta"])
+        self.assertGreater(leaderboard[0]["recent_lp_delta"], 0)
         self.assertEqual(leaderboard[1]["user_id"], p2_id)
+        self.assertEqual(leaderboard[1]["username"], "rated-p2")
         self.assertEqual(leaderboard[1]["rank"], 2)
+        self.assertIsNotNone(leaderboard[1]["recent_lp_delta"])
+        self.assertLessEqual(leaderboard[1]["recent_lp_delta"], 0)
+
+        events = self._list_rating_events(game_id)
+        self.assertEqual(len(events), 2)
+        for event in events:
+            self.assertIsNotNone(event.before_league)
+            self.assertIsNotNone(event.before_division)
+            self.assertIsNotNone(event.before_lp)
+            self.assertIsNotNone(event.after_league)
+            self.assertIsNotNone(event.after_division)
+            self.assertIsNotNone(event.after_lp)
+            self.assertIn(event.transition_type, {"promotion", "demotion", "stable"})
+
+        p1_events_resp = self.client.get(
+            f"/api/v1/ranking/ratings/{p1_id}/{season_id}/events?limit=10",
+        )
+        self.assertEqual(p1_events_resp.status_code, 200)
+        p1_events_page = p1_events_resp.json()
+        self.assertEqual(p1_events_page["total"], 1)
+        self.assertEqual(len(p1_events_page["items"]), 1)
+        self.assertEqual(p1_events_page["items"][0]["user_id"], p1_id)
+        self.assertEqual(p1_events_page["items"][0]["game_id"], game_id)
+        self.assertIn(
+            p1_events_page["items"][0]["transition_type"],
+            {"promotion", "demotion", "stable"},
+        )
 
     def _register_and_login(self, username: str, email: str) -> dict[str, str]:
         register = self.client.post(
@@ -305,6 +703,48 @@ class TestApiGamesIntegration(unittest.TestCase):
                 await session.commit()
 
         asyncio.run(_run())
+
+    def _create_bot_user_with_profile(
+        self,
+        *,
+        username: str,
+        email: str,
+        heuristic_level: str,
+    ) -> str:
+        async def _run() -> str:
+            async with self.sessionmaker() as session:
+                user = User(
+                    username=username,
+                    email=email,
+                    password_hash=None,
+                    is_active=True,
+                    is_admin=False,
+                    is_bot=True,
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                profile = BotProfile(
+                    user_id=user.id,
+                    agent_type=AgentType.HEURISTIC,
+                    heuristic_level=heuristic_level,
+                    model_mode=None,
+                    enabled=True,
+                )
+                session.add(profile)
+                await session.commit()
+                return str(user.id)
+
+        return asyncio.run(_run())
+
+    def _list_rating_events(self, game_id: str) -> list[RatingEvent]:
+        async def _run() -> list[RatingEvent]:
+            async with self.sessionmaker() as session:
+                stmt = select(RatingEvent).where(RatingEvent.game_id == UUID(game_id))
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+
+        return asyncio.run(_run())
 
 
 if __name__ == "__main__":

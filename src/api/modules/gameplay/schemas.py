@@ -129,6 +129,15 @@ class ManualMoveRequest(BaseModel):
 
     board: BoardStatePayload
     move: MovePayload
+    mode: Literal[
+        "manual",
+        "fast",
+        "strong",
+        "heuristic_easy",
+        "heuristic_normal",
+        "heuristic_hard",
+        "random",
+    ] = "manual"
 
 
 class GameCreateRequest(BaseModel):
@@ -174,6 +183,7 @@ class GameResponse(BaseModel):
                 "rated": False,
                 "player1_id": "e3886f90-59e4-4ef6-86ae-d0f5f1dcaf33",
                 "player2_id": "c7fcff51-1564-4eb4-8b4b-157dff7dc132",
+                "created_by_user_id": "e3886f90-59e4-4ef6-86ae-d0f5f1dcaf33",
                 "player1_agent": "human",
                 "player2_agent": "human",
                 "model_version_id": None,
@@ -194,6 +204,9 @@ class GameResponse(BaseModel):
     rated: bool
     player1_id: UUID | None
     player2_id: UUID | None
+    created_by_user_id: UUID | None = None
+    player1_username: str | None = None
+    player2_username: str | None = None
     player1_agent: AgentType
     player2_agent: AgentType
     model_version_id: UUID | None

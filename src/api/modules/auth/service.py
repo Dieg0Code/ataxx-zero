@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -32,7 +32,7 @@ class AuthService:
         self.bearer_type = "bearer"
 
     async def register(self, payload: AuthRegisterRequest) -> User:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         user = User(
             username=payload.username,
             email=payload.email,
@@ -86,7 +86,7 @@ class AuthService:
 
         await self.repository.revoke_refresh_token(
             stored,
-            revoked_at=datetime.now(timezone.utc),
+            revoked_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
         return await self._issue_token_pair(user_id=user_id)
 
@@ -99,7 +99,7 @@ class AuthService:
             return
         await self.repository.revoke_refresh_token(
             stored,
-            revoked_at=datetime.now(timezone.utc),
+            revoked_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
     async def get_user_from_access_token(self, access_token: str) -> User:
@@ -136,7 +136,7 @@ class AuthService:
             algorithm=self.settings.auth_jwt_algorithm,
             expires_days=self.settings.auth_refresh_token_ttl_days,
         )
-        expires_at = datetime.now(timezone.utc) + timedelta(
+        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
             days=self.settings.auth_refresh_token_ttl_days
         )
         await self.repository.create_refresh_token(
@@ -157,3 +157,4 @@ class AuthService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+

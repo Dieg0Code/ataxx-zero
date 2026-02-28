@@ -63,8 +63,19 @@ class AtaxxZero(pl.LightningModule):
             raise ValueError("forward expects a board tensor as first argument.")
         if not isinstance(x_obj, torch.Tensor):
             raise TypeError("forward expected torch.Tensor input.")
-        x = x_obj
-        return self.model(x)
+        action_mask_obj = kwargs.get("action_mask")
+        if action_mask_obj is None and len(args) > 1:
+            action_mask_obj = args[1]
+        if action_mask_obj is not None and not isinstance(action_mask_obj, torch.Tensor):
+            raise TypeError("forward expected action_mask as torch.Tensor.")
+        return self.model(x_obj, action_mask=action_mask_obj)
+
+    def _resolve_batch_obj(self, args: tuple[object, ...], kwargs: dict[str, object], caller: str) -> object:
+        if "batch" in kwargs:
+            return kwargs["batch"]
+        if len(args) > 0:
+            return args[0]
+        raise ValueError(f"{caller} expects a batch.")
 
     def _coerce_train_batch(self, batch_obj: object, caller: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if not isinstance(batch_obj, Sequence):
@@ -114,14 +125,9 @@ class AtaxxZero(pl.LightningModule):
         *args: object,
         **kwargs: object,
     ) -> torch.Tensor:
-        if "batch" in kwargs:
-            batch_obj = kwargs["batch"]
-        elif len(args) > 0:
-            batch_obj = args[0]
-        else:
-            raise ValueError("training_step expects a batch.")
-        batch = self._coerce_train_batch(batch_obj=batch_obj, caller="training_step")
-        metrics = self._common_step(batch)
+        batch_obj = self._resolve_batch_obj(args=args, kwargs=kwargs, caller="training_step")
+        batch_coerced = self._coerce_train_batch(batch_obj=batch_obj, caller="training_step")
+        metrics = self._common_step(batch_coerced)
         if getattr(self, "_trainer", None) is not None:
             self.log_dict(
                 {
@@ -142,14 +148,9 @@ class AtaxxZero(pl.LightningModule):
         *args: object,
         **kwargs: object,
     ) -> torch.Tensor:
-        if "batch" in kwargs:
-            batch_obj = kwargs["batch"]
-        elif len(args) > 0:
-            batch_obj = args[0]
-        else:
-            raise ValueError("validation_step expects a batch.")
-        batch = self._coerce_train_batch(batch_obj=batch_obj, caller="validation_step")
-        metrics = self._common_step(batch)
+        batch_obj = self._resolve_batch_obj(args=args, kwargs=kwargs, caller="validation_step")
+        batch_coerced = self._coerce_train_batch(batch_obj=batch_obj, caller="validation_step")
+        metrics = self._common_step(batch_coerced)
         if getattr(self, "_trainer", None) is not None:
             self.log_dict(
                 {
@@ -209,12 +210,7 @@ class AtaxxZero(pl.LightningModule):
         *args: object,
         **kwargs: object,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if "batch" in kwargs:
-            batch_obj = kwargs["batch"]
-        elif len(args) > 0:
-            batch_obj = args[0]
-        else:
-            raise ValueError("predict_step expects a batch tensor.")
+        batch_obj = self._resolve_batch_obj(args=args, kwargs=kwargs, caller="predict_step")
         if isinstance(batch_obj, Sequence) and len(batch_obj) > 0:
             batch_obj = batch_obj[0]
         if not isinstance(batch_obj, torch.Tensor):

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import os
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +24,9 @@ if TYPE_CHECKING:
     from engine.mcts import MCTS
     from game.board import AtaxxBoard
     from model.system import AtaxxZero
+
+
+_WORKER_MCTS: object | None = None
 
 
 def _ensure_src_on_path() -> None:
@@ -70,6 +76,9 @@ CONFIG: dict[str, int | float | bool | str] = {
     "strict_probs": False,
     "trainer_devices": 1,
     "trainer_strategy": "auto",
+    "trainer_precision": "16-mixed",
+    "trainer_benchmark": True,
+    "mcts_use_amp": True,
     "opponent_self_prob": 0.8,
     "opponent_heuristic_prob": 0.15,
     "opponent_random_prob": 0.05,
@@ -83,6 +92,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "eval_games": 12,
     "eval_sims": 220,
     "eval_heuristic_level": "hard",
+    "selfplay_workers": 1,
+    "quiet_mode": False,
 }
 
 
@@ -106,10 +117,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-log-versions", type=int, default=None)
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--strategy", default=None)
+    parser.add_argument(
+        "--precision",
+        choices=["16-mixed", "bf16-mixed", "32-true"],
+        default=None,
+    )
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--persistent-workers", action="store_true")
     parser.add_argument("--no-persistent-workers", action="store_true")
     parser.add_argument("--strict-probs", action="store_true")
+    parser.add_argument("--no-mcts-amp", action="store_true")
     parser.add_argument("--opp-self", type=float, default=None)
     parser.add_argument("--opp-heuristic", type=float, default=None)
     parser.add_argument("--opp-random", type=float, default=None)
@@ -126,6 +143,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=None)
     parser.add_argument("--eval-games", type=int, default=None)
     parser.add_argument("--eval-sims", type=int, default=None)
+    parser.add_argument("--selfplay-workers", type=int, default=None)
     parser.add_argument(
         "--eval-heuristic-level",
         choices=["easy", "normal", "hard"],
@@ -174,6 +192,8 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["trainer_devices"] = max(1, args.devices)
     if args.strategy is not None:
         CONFIG["trainer_strategy"] = args.strategy
+    if args.precision is not None:
+        CONFIG["trainer_precision"] = args.precision
     if args.num_workers is not None:
         CONFIG["num_workers"] = max(0, args.num_workers)
     if args.persistent_workers:
@@ -182,6 +202,8 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["persistent_workers"] = False
     if args.strict_probs:
         CONFIG["strict_probs"] = True
+    if args.no_mcts_amp:
+        CONFIG["mcts_use_amp"] = False
     if args.opp_self is not None:
         CONFIG["opponent_self_prob"] = max(0.0, args.opp_self)
     if args.opp_heuristic is not None:
@@ -206,11 +228,15 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["eval_games"] = max(2, args.eval_games)
     if args.eval_sims is not None:
         CONFIG["eval_sims"] = max(8, args.eval_sims)
+    if args.selfplay_workers is not None:
+        CONFIG["selfplay_workers"] = max(1, args.selfplay_workers)
     if args.eval_heuristic_level is not None:
         CONFIG["eval_heuristic_level"] = args.eval_heuristic_level
     if args.quiet:
         CONFIG["show_progress_bar"] = False
         CONFIG["trainer_log_every_n_steps"] = 100
+        CONFIG["episode_log_every"] = 0
+        CONFIG["quiet_mode"] = True
     if args.verbose:
         CONFIG["verbose_logs"] = True
     if args.hf:
@@ -235,6 +261,10 @@ def _cfg_str(key: str) -> str:
     return str(CONFIG[key])
 
 
+def _is_quiet() -> bool:
+    return _cfg_bool("quiet_mode")
+
+
 def _validate_config() -> None:
     int_positive_keys = (
         "iterations",
@@ -246,6 +276,7 @@ def _validate_config() -> None:
         "eval_every",
         "eval_games",
         "eval_sims",
+        "selfplay_workers",
     )
     for key in int_positive_keys:
         if _cfg_int(key) <= 0:
@@ -318,12 +349,21 @@ def _is_ddp_rendezvous_timeout(exc: BaseException) -> bool:
     )
 
 
+def _resolve_trainer_precision(accelerator: str) -> str:
+    configured = _cfg_str("trainer_precision")
+    if accelerator == "gpu":
+        return configured
+    return "32-true"
+
+
 def _build_trainer(
     *,
     epochs: int,
     accelerator: str,
     devices: int,
     strategy: str,
+    precision: str,
+    benchmark: bool,
     checkpoint_callback: ModelCheckpoint,
     lr_monitor: LearningRateMonitor,
     logger: TensorBoardLogger,
@@ -333,6 +373,8 @@ def _build_trainer(
         accelerator=accelerator,
         devices=devices,
         strategy=strategy,
+        precision=precision,
+        benchmark=benchmark,
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
         enable_progress_bar=_cfg_bool("show_progress_bar"),
@@ -387,7 +429,7 @@ class HuggingFaceCheckpointer:
         self.api = HfApi(token=token)
         self.api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
 
-    def save_checkpoint(
+    def save_checkpoint_local(
         self,
         *,
         iteration: int,
@@ -395,7 +437,7 @@ class HuggingFaceCheckpointer:
         buffer: ReplayBuffer,
         config: dict[str, int | float | bool | str],
         stats: dict[str, float | int],
-    ) -> None:
+    ) -> tuple[Path, Path | None, Path]:
         model_name = f"model_iter_{iteration:03d}.pt"
         buffer_name = f"buffer_iter_{iteration:03d}.npz"
         metadata_name = f"metadata_iter_{iteration:03d}.json"
@@ -411,12 +453,14 @@ class HuggingFaceCheckpointer:
         )
 
         all_examples = buffer.get_all()
+        buffer_path: Path | None = None
         if len(all_examples) > 0:
             observations = np.asarray([ex[0] for ex in all_examples], dtype=np.float32)
             policies = np.asarray([ex[1] for ex in all_examples], dtype=np.float32)
             values = np.asarray([ex[2] for ex in all_examples], dtype=np.float32)
+            buffer_path = self.local_dir / buffer_name
             np.savez_compressed(
-                self.local_dir / buffer_name,
+                buffer_path,
                 observations=observations,
                 policies=policies,
                 values=values,
@@ -429,17 +473,46 @@ class HuggingFaceCheckpointer:
             "config": config,
             "stats": stats,
         }
-        (self.local_dir / metadata_name).write_text(
+        metadata_path = self.local_dir / metadata_name
+        metadata_path.write_text(
             json.dumps(metadata, indent=2),
             encoding="utf-8",
         )
+        return model_path, buffer_path, metadata_path
 
-        self.api.upload_folder(
+    def upload_checkpoint_files(
+        self,
+        *,
+        iteration: int,
+        model_path: Path,
+        buffer_path: Path | None,
+        metadata_path: Path,
+        keep_last_n: int,
+    ) -> None:
+        commit_message = f"Checkpoint iteration {iteration}"
+        self.api.upload_file(
+            path_or_fileobj=str(model_path),
+            path_in_repo=model_path.name,
             repo_id=self.repo_id,
             repo_type="model",
-            folder_path=str(self.local_dir),
-            commit_message=f"Checkpoint iteration {iteration}",
+            commit_message=commit_message,
         )
+        if buffer_path is not None:
+            self.api.upload_file(
+                path_or_fileobj=str(buffer_path),
+                path_in_repo=buffer_path.name,
+                repo_id=self.repo_id,
+                repo_type="model",
+                commit_message=commit_message,
+            )
+        self.api.upload_file(
+            path_or_fileobj=str(metadata_path),
+            path_in_repo=metadata_path.name,
+            repo_id=self.repo_id,
+            repo_type="model",
+            commit_message=commit_message,
+        )
+        self.cleanup_local_checkpoints(keep_last_n=keep_last_n)
 
     def load_latest_checkpoint(self, *, system: AtaxxZero, buffer: ReplayBuffer) -> int:
         files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="model")
@@ -524,26 +597,28 @@ def _init_hf_checkpointer() -> HuggingFaceCheckpointer | None:
 def _compute_action_probs(
     board: AtaxxBoard,
     mcts: MCTS,
+    root: object | None,
     add_noise: bool,
     temperature: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, object | None]:
     from game.actions import ACTION_SPACE
 
-    probs = mcts.run(
+    probs, updated_root = mcts.run_with_root(
         board=board,
+        root=root,
         add_dirichlet_noise=add_noise,
         temperature=temperature,
     )
     total_prob = float(np.sum(probs))
     if total_prob > 0.0:
-        return probs
+        return probs, updated_root
 
     valid_moves = board.get_valid_moves()
     fallback = ACTION_SPACE.mask_from_moves(
         valid_moves,
         include_pass=(len(valid_moves) == 0),
     )
-    return fallback / float(np.sum(fallback))
+    return fallback / float(np.sum(fallback)), updated_root
 
 
 def _select_action_idx(
@@ -582,15 +657,15 @@ def _heuristic_move(
     if level == "easy":
         return moves[int(rng.integers(0, len(moves)))]
 
-    scored = sorted(
+    if level == "hard":
+        top_k = max(1, min(3, len(moves)))
+    else:
+        top_k = max(1, min(5, len(moves)))
+    scored = heapq.nlargest(
+        top_k,
         ((move, _score_move_for_player(board, move)) for move in moves),
         key=lambda item: item[1],
-        reverse=True,
     )
-    if level == "hard":
-        top_k = max(1, min(3, len(scored)))
-    else:
-        top_k = max(1, min(5, len(scored)))
     weights = np.linspace(1.0, 0.35, top_k, dtype=np.float64)
     weights = weights / np.sum(weights)
     pick = int(rng.choice(top_k, p=weights))
@@ -671,6 +746,7 @@ def _play_episode(
     from game.board import AtaxxBoard
 
     board = AtaxxBoard()
+    root = None
     game_history: list[tuple[np.ndarray, np.ndarray, int]] = []
     turn_idx = 0
 
@@ -679,16 +755,17 @@ def _play_episode(
         is_model_turn = board.current_player == model_player
         if is_model_turn or opponent_type == "self":
             temperature = 1.0 if turn_idx <= temp_threshold else 0.0
-            probs = _compute_action_probs(
+            probs, root = _compute_action_probs(
                 board=board,
                 mcts=mcts,
+                root=root,
                 add_noise=(add_noise and is_model_turn),
                 temperature=temperature,
             )
             game_history.append(
                 (
                     board.get_observation(),
-                    probs.astype(np.float32),
+                    probs,
                     board.current_player,
                 )
             )
@@ -698,15 +775,70 @@ def _play_episode(
                 rng=rng,
             )
             board.step(ACTION_SPACE.decode(action_idx))
+            root = mcts.advance_root(root, action_idx)
             continue
 
         if opponent_type == "heuristic":
-            board.step(_heuristic_move(board, rng, opponent_heuristic_level))
+            move = _heuristic_move(board, rng, opponent_heuristic_level)
+            board.step(move)
+            root = mcts.advance_root(root, ACTION_SPACE.encode(move))
             continue
 
-        board.step(_random_move(board, rng))
+        move = _random_move(board, rng)
+        board.step(move)
+        root = mcts.advance_root(root, ACTION_SPACE.encode(move))
 
     return game_history, board.get_result(), turn_idx
+
+
+def _init_selfplay_process_worker(
+    model_state_dict: dict[str, torch.Tensor],
+    model_cfg: dict[str, int | float],
+    c_puct: float,
+    sims: int,
+) -> None:
+    global _WORKER_MCTS
+    _ensure_src_on_path()
+    from engine.mcts import MCTS
+    from model.transformer import AtaxxTransformerNet
+
+    model = AtaxxTransformerNet(
+        d_model=int(model_cfg["d_model"]),
+        nhead=int(model_cfg["nhead"]),
+        num_layers=int(model_cfg["num_layers"]),
+        dim_feedforward=int(model_cfg["dim_feedforward"]),
+        dropout=float(model_cfg["dropout"]),
+    )
+    model.load_state_dict(model_state_dict)
+    model.eval()
+    _WORKER_MCTS = MCTS(
+        model=model,
+        c_puct=c_puct,
+        n_simulations=sims,
+        device="cpu",
+        use_amp=False,
+    )
+
+
+def _run_episode_in_process_worker(
+    payload: tuple[int, str, str, int, bool, int],
+) -> tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]:
+    global _WORKER_MCTS
+    if _WORKER_MCTS is None:
+        raise RuntimeError("Worker MCTS is not initialized.")
+    episode_seed, opponent_type, heuristic_level, model_player, add_noise, temp_threshold = (
+        payload
+    )
+    rng = np.random.default_rng(seed=episode_seed)
+    return _play_episode(
+        mcts=_WORKER_MCTS,  # type: ignore[arg-type]
+        add_noise=add_noise,
+        temp_threshold=temp_threshold,
+        rng=rng,
+        opponent_type=opponent_type,
+        opponent_heuristic_level=heuristic_level,
+        model_player=model_player,
+    )
 
 
 def _update_stats(stats: dict[str, float | int], winner: int, turn_idx: int) -> None:
@@ -745,19 +877,24 @@ def _play_eval_episode(
     from game.board import AtaxxBoard
 
     board = AtaxxBoard()
+    root = None
     model_player = 1 if float(rng.random()) >= 0.5 else -1
     while not board.is_game_over():
         if board.current_player == model_player:
-            probs = _compute_action_probs(
+            probs, root = _compute_action_probs(
                 board=board,
                 mcts=mcts,
+                root=root,
                 add_noise=False,
                 temperature=0.0,
             )
             action_idx = int(np.argmax(probs))
             board.step(ACTION_SPACE.decode(action_idx))
+            root = mcts.advance_root(root, action_idx)
             continue
-        board.step(_heuristic_move(board, rng, heuristic_level))
+        move = _heuristic_move(board, rng, heuristic_level)
+        board.step(move)
+        root = mcts.advance_root(root, ACTION_SPACE.encode(move))
     winner = board.get_result()
     if winner == model_player:
         return 1
@@ -784,6 +921,7 @@ def evaluate_model(
         c_puct=c_puct,
         n_simulations=sims,
         device=device,
+        use_amp=_cfg_bool("mcts_use_amp"),
     )
     rng = np.random.default_rng(seed=seed)
     wins = 0
@@ -824,23 +962,25 @@ def execute_self_play(
         c_puct=_cfg_float("c_puct"),
         n_simulations=_cfg_int("mcts_sims"),
         device=device,
+        use_amp=_cfg_bool("mcts_use_amp"),
     )
 
     episodes = _cfg_int("episodes_per_iter")
     temp_threshold = _cfg_int("temp_threshold")
     add_noise = _cfg_bool("add_noise")
     rng = np.random.default_rng(seed=_cfg_int("seed") + iteration)
-    _log(f"[Iteration {iteration}] Self-play episodes: {episodes}")
+    selfplay_workers = _cfg_int("selfplay_workers")
+    _log(f"[Iteration {iteration}] Self-play episodes: {episodes}", verbose_only=True)
     mix_probs, mix_labels = _resolve_opponent_mix()
     mix_text = ", ".join(
         f"{name}={prob:.2f}" for name, prob in zip(mix_labels, mix_probs, strict=True)
     )
-    _log(f"  Opponent mix: {mix_text}")
+    _log(f"  Opponent mix: {mix_text}", verbose_only=True)
     level_probs, level_labels = _resolve_heuristic_level_mix()
     level_text = ", ".join(
         f"{name}={prob:.2f}" for name, prob in zip(level_labels, level_probs, strict=True)
     )
-    _log(f"  Heuristic levels: {level_text}")
+    _log(f"  Heuristic levels: {level_text}", verbose_only=True)
 
     stats: dict[str, float | int] = {
         "wins_p1": 0,
@@ -856,39 +996,116 @@ def execute_self_play(
         "episodes_vs_heuristic_hard": 0,
     }
 
+    episode_specs: list[tuple[int, str, str, int]] = []
     for episode_idx in range(episodes):
         opponent_type = _sample_opponent_type(rng)
-        stats[f"episodes_vs_{opponent_type}"] = int(stats[f"episodes_vs_{opponent_type}"]) + 1
         heuristic_level = _sample_heuristic_level(rng)
+        model_player = 1 if float(rng.random()) >= _cfg_float("model_side_swap_prob") else -1
+        episode_seed = _cfg_int("seed") + iteration * 10_000 + episode_idx
+        episode_specs.append((episode_seed, opponent_type, heuristic_level, model_player))
+
+    used_parallel = False
+    episode_results: list[tuple[str, str, list[tuple[np.ndarray, np.ndarray, int]], int, int]] = []
+
+    if selfplay_workers > 1:
+        try:
+            max_workers = min(selfplay_workers, episodes)
+            worker_payloads = [
+                (
+                    episode_seed,
+                    opponent_type,
+                    heuristic_level,
+                    model_player,
+                    add_noise,
+                    temp_threshold,
+                )
+                for episode_seed, opponent_type, heuristic_level, model_player in episode_specs
+            ]
+            model_state_dict = {
+                name: tensor.detach().cpu()
+                for name, tensor in system.model.state_dict().items()
+            }
+            model_cfg: dict[str, int | float] = {
+                "d_model": _cfg_int("d_model"),
+                "nhead": _cfg_int("nhead"),
+                "num_layers": _cfg_int("num_layers"),
+                "dim_feedforward": _cfg_int("dim_feedforward"),
+                "dropout": _cfg_float("dropout"),
+            }
+            with ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=_init_selfplay_process_worker,
+                initargs=(
+                    model_state_dict,
+                    model_cfg,
+                    _cfg_float("c_puct"),
+                    _cfg_int("mcts_sims"),
+                ),
+            ) as executor:
+                for (
+                    (_, opponent_type, heuristic_level, _),
+                    episode_result,
+                ) in zip(
+                    episode_specs,
+                    executor.map(_run_episode_in_process_worker, worker_payloads),
+                    strict=True,
+                ):
+                    game_history, winner, turn_idx = episode_result
+                    episode_results.append(
+                        (opponent_type, heuristic_level, game_history, winner, turn_idx)
+                    )
+            used_parallel = True
+            _log(f"  Self-play process workers active: {max_workers}", verbose_only=True)
+        except Exception as exc:
+            _log(
+                f"  Process self-play failed, falling back to sequential mode: {exc}",
+            )
+            episode_results.clear()
+
+    if not used_parallel:
+        for episode_seed, opponent_type, heuristic_level, model_player in episode_specs:
+            local_rng = np.random.default_rng(seed=episode_seed)
+            game_history, winner, turn_idx = _play_episode(
+                mcts=mcts,
+                add_noise=add_noise,
+                temp_threshold=temp_threshold,
+                rng=local_rng,
+                opponent_type=opponent_type,
+                opponent_heuristic_level=heuristic_level,
+                model_player=model_player,
+            )
+            episode_results.append((opponent_type, heuristic_level, game_history, winner, turn_idx))
+
+    for episode_idx, (opponent_type, heuristic_level, game_history, winner, turn_idx) in enumerate(
+        episode_results,
+        start=1,
+    ):
+        stats[f"episodes_vs_{opponent_type}"] = int(stats[f"episodes_vs_{opponent_type}"]) + 1
         if opponent_type == "heuristic":
             stats[f"episodes_vs_heuristic_{heuristic_level}"] = int(
                 stats[f"episodes_vs_heuristic_{heuristic_level}"]
             ) + 1
-        model_player = 1 if float(rng.random()) >= _cfg_float("model_side_swap_prob") else -1
-        game_history, winner, turn_idx = _play_episode(
-            mcts=mcts,
-            add_noise=add_noise,
-            temp_threshold=temp_threshold,
-            rng=rng,
-            opponent_type=opponent_type,
-            opponent_heuristic_level=heuristic_level,
-            model_player=model_player,
-        )
         _update_stats(stats=stats, winner=winner, turn_idx=turn_idx)
         buffer.save_game(_history_to_examples(game_history=game_history, winner=winner))
 
         log_every = _cfg_int("episode_log_every")
-        if log_every > 0 and (episode_idx + 1) % log_every == 0:
+        if log_every > 0 and episode_idx % log_every == 0:
             _log(
-                f"  Episode {episode_idx + 1}/{episodes} | winner={winner} turns={turn_idx}",
+                f"  Episode {episode_idx}/{episodes} | winner={winner} turns={turn_idx}",
                 verbose_only=True,
             )
 
     stats["avg_game_length"] = float(stats["total_turns"]) / float(episodes)
+    cache_stats = mcts.cache_stats()
+    stats["cache_hits"] = int(cache_stats["hits"])
+    stats["cache_misses"] = int(cache_stats["misses"])
+    stats["cache_hit_rate"] = float(cache_stats["hit_rate"])
     _log(
         "  Self-play summary: "
         f"P1={stats['wins_p1']} P2={stats['wins_p2']} draws={stats['draws']} "
-        f"avg_turns={stats['avg_game_length']:.1f}"
+        f"avg_turns={stats['avg_game_length']:.1f} "
+        f"cache_hit={float(stats['cache_hit_rate']):.1%}",
+        verbose_only=_is_quiet(),
     )
     return stats
 
@@ -933,10 +1150,12 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     _log(f"Device: {device}")
     trainer_accelerator, trainer_devices, trainer_strategy = _resolve_trainer_hw()
+    trainer_precision = _resolve_trainer_precision(trainer_accelerator)
     _log(
         "Trainer HW: "
         f"accelerator={trainer_accelerator}, devices={trainer_devices}, strategy={trainer_strategy}",
     )
+    _log(f"Trainer precision: {trainer_precision}")
 
     checkpoint_dir = Path(_cfg_str("checkpoint_dir"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -958,7 +1177,10 @@ def main() -> None:
     )
     buffer = ReplayBuffer(capacity=_cfg_int("buffer_size"))
     hf_checkpointer = _init_hf_checkpointer()
+    hf_upload_executor: ThreadPoolExecutor | None = None
+    hf_upload_futures: list[Any] = []
     if hf_checkpointer is not None:
+        hf_upload_executor = ThreadPoolExecutor(max_workers=1)
         try:
             start_iteration = hf_checkpointer.load_latest_checkpoint(
                 system=system,
@@ -984,155 +1206,193 @@ def main() -> None:
     logger = TensorBoardLogger(save_dir=str(log_dir), name="ataxx_zero")
     best_eval_score = -1.0
 
-    for iteration in range(start_iteration + 1, iterations + 1):
-        _log(f"=== Iteration {iteration}/{iterations} ===")
-        execute_self_play(
-            system=system, buffer=buffer, iteration=iteration, device=device
-        )
-        _log(f"Replay size: {len(buffer)}")
+    try:
+        for iteration in range(start_iteration + 1, iterations + 1):
+            _log(f"=== Iteration {iteration}/{iterations} ===")
+            selfplay_start = time.perf_counter()
+            selfplay_stats = execute_self_play(
+                system=system, buffer=buffer, iteration=iteration, device=device
+            )
+            selfplay_s = time.perf_counter() - selfplay_start
 
-        train_dataset = AtaxxDataset(
-            buffer=buffer, augment=True, reference_buffer=False
-        )
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=_cfg_int("batch_size"),
-            shuffle=True,
-            num_workers=_cfg_int("num_workers"),
-            persistent_workers=(
-                _cfg_bool("persistent_workers") and _cfg_int("num_workers") > 0
-            ),
-            pin_memory=(device == "cuda"),
-        )
-
-        val_dataset = ValidationDataset(buffer=buffer, split=_cfg_float("val_split"))
-        val_loader = (
-            DataLoader(
-                val_dataset,
+            train_dataset = AtaxxDataset(
+                buffer=buffer, augment=True, reference_buffer=False
+            )
+            train_loader = DataLoader(
+                train_dataset,
                 batch_size=_cfg_int("batch_size"),
-                shuffle=False,
+                shuffle=True,
                 num_workers=_cfg_int("num_workers"),
                 persistent_workers=(
                     _cfg_bool("persistent_workers") and _cfg_int("num_workers") > 0
                 ),
                 pin_memory=(device == "cuda"),
             )
-            if len(val_dataset) > 0
-            else None
-        )
 
-        trainer = _build_trainer(
-            epochs=epochs,
-            accelerator=trainer_accelerator,
-            devices=trainer_devices,
-            strategy=trainer_strategy,
-            checkpoint_callback=checkpoint_callback,
-            lr_monitor=lr_monitor,
-            logger=logger,
-        )
-        system.train()
-        try:
-            trainer.fit(
-                model=system,
-                train_dataloaders=train_loader,
-                val_dataloaders=val_loader,
+            val_dataset = ValidationDataset(buffer=buffer, split=_cfg_float("val_split"))
+            val_loader = (
+                DataLoader(
+                    val_dataset,
+                    batch_size=_cfg_int("batch_size"),
+                    shuffle=False,
+                    num_workers=_cfg_int("num_workers"),
+                    persistent_workers=(
+                        _cfg_bool("persistent_workers") and _cfg_int("num_workers") > 0
+                    ),
+                    pin_memory=(device == "cuda"),
+                )
+                if len(val_dataset) > 0
+                else None
             )
-        except Exception as exc:
-            if trainer_devices > 1 and _is_ddp_rendezvous_timeout(exc):
-                _log(
-                    "DDP rendezvous failed. Falling back to single-GPU for this run.",
-                )
-                trainer_accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-                trainer_devices = 1
-                trainer_strategy = "auto"
-                trainer = _build_trainer(
-                    epochs=epochs,
-                    accelerator=trainer_accelerator,
-                    devices=trainer_devices,
-                    strategy=trainer_strategy,
-                    checkpoint_callback=checkpoint_callback,
-                    lr_monitor=lr_monitor,
-                    logger=logger,
-                )
-                system.train()
+
+            trainer = _build_trainer(
+                epochs=epochs,
+                accelerator=trainer_accelerator,
+                devices=trainer_devices,
+                strategy=trainer_strategy,
+                precision=trainer_precision,
+                benchmark=_cfg_bool("trainer_benchmark"),
+                checkpoint_callback=checkpoint_callback,
+                lr_monitor=lr_monitor,
+                logger=logger,
+            )
+            system.train()
+            fit_start = time.perf_counter()
+            try:
                 trainer.fit(
                     model=system,
                     train_dataloaders=train_loader,
                     val_dataloaders=val_loader,
                 )
-            else:
-                raise
-
-        eval_stats: dict[str, float | int] | None = None
-        if _cfg_bool("eval_enabled") and iteration % _cfg_int("eval_every") == 0:
-            try:
-                eval_stats = evaluate_model(
-                    system=system,
-                    device=device,
-                    games=_cfg_int("eval_games"),
-                    sims=_cfg_int("eval_sims"),
-                    c_puct=_cfg_float("c_puct"),
-                    heuristic_level=_cfg_str("eval_heuristic_level"),
-                    seed=_cfg_int("seed") + 10_000 + iteration,
-                )
-                _log(
-                    "Eval summary: "
-                    f"W={eval_stats['wins']} L={eval_stats['losses']} D={eval_stats['draws']} "
-                    f"score={float(eval_stats['score']):.3f} "
-                    f"vs {eval_stats['heuristic_level']} (sims={eval_stats['sims']})"
-                )
-                if float(eval_stats["score"]) > best_eval_score:
-                    best_eval_score = float(eval_stats["score"])
-                    best_path = checkpoint_dir / "best_eval.ckpt"
-                    trainer.save_checkpoint(str(best_path))
-                    _log(f"New best checkpoint saved: {best_path}")
             except Exception as exc:
-                _log(f"Eval failed this iteration, continuing training: {exc}")
-
-        save_every = _cfg_int("save_every")
-        if iteration % save_every == 0:
-            manual_ckpt = checkpoint_dir / f"manual_iter_{iteration:03d}.ckpt"
-            try:
-                trainer.save_checkpoint(str(manual_ckpt))
-                _log(f"Saved local checkpoint: {manual_ckpt}")
-                _cleanup_local_checkpoints(
-                    checkpoint_dir=checkpoint_dir,
-                    keep_last_n=_cfg_int("keep_last_n_local_checkpoints"),
-                )
-            except OSError:
-                _log("Local checkpoint save failed for this iteration.")
-
-            if hf_checkpointer is not None:
-                try:
-                    hf_checkpointer.save_checkpoint(
-                        iteration=iteration,
-                        system=system,
-                        buffer=buffer,
-                        config=CONFIG,
-                        stats={
-                            "replay_size": len(buffer),
-                            "best_eval_score": best_eval_score,
-                            **(eval_stats or {}),
-                        },
+                if trainer_devices > 1 and _is_ddp_rendezvous_timeout(exc):
+                    _log(
+                        "DDP rendezvous failed. Falling back to single-GPU for this run.",
                     )
-                    hf_checkpointer.cleanup_local_checkpoints(
-                        keep_last_n=_cfg_int("keep_last_n_hf_checkpoints")
+                    trainer_accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+                    trainer_devices = 1
+                    trainer_strategy = "auto"
+                    trainer_precision = _resolve_trainer_precision(trainer_accelerator)
+                    trainer = _build_trainer(
+                        epochs=epochs,
+                        accelerator=trainer_accelerator,
+                        devices=trainer_devices,
+                        strategy=trainer_strategy,
+                        precision=trainer_precision,
+                        benchmark=_cfg_bool("trainer_benchmark"),
+                        checkpoint_callback=checkpoint_callback,
+                        lr_monitor=lr_monitor,
+                        logger=logger,
                     )
-                    _log(f"Uploaded HF checkpoint for iteration {iteration}.")
-                except (OSError, ValueError):
-                    _log("HF upload failed for this iteration.")
-            if _cfg_bool("export_onnx"):
-                try:
-                    export_onnx(system.model, _cfg_str("onnx_path"), device=device)
-                except (OSError, RuntimeError, ValueError):
-                    _log("ONNX export failed for this iteration.")
-            else:
-                _log("ONNX export disabled by config/CLI.")
-            _cleanup_old_log_versions(
-                log_dir=log_dir,
-                run_name="ataxx_zero",
-                keep_last_n=_cfg_int("keep_last_n_log_versions"),
+                    system.train()
+                    trainer.fit(
+                        model=system,
+                        train_dataloaders=train_loader,
+                        val_dataloaders=val_loader,
+                    )
+                else:
+                    raise
+            fit_s = time.perf_counter() - fit_start
+            _log(
+                f"[Iter {iteration}/{iterations}] selfplay={selfplay_s:.1f}s "
+                f"fit={fit_s:.1f}s replay={len(buffer)} "
+                f"cache_hit={float(selfplay_stats['cache_hit_rate']):.1%}"
             )
+
+            eval_stats: dict[str, float | int] | None = None
+            if _cfg_bool("eval_enabled") and iteration % _cfg_int("eval_every") == 0:
+                try:
+                    eval_stats = evaluate_model(
+                        system=system,
+                        device=device,
+                        games=_cfg_int("eval_games"),
+                        sims=_cfg_int("eval_sims"),
+                        c_puct=_cfg_float("c_puct"),
+                        heuristic_level=_cfg_str("eval_heuristic_level"),
+                        seed=_cfg_int("seed") + 10_000 + iteration,
+                    )
+                    _log(
+                        "Eval summary: "
+                        f"W={eval_stats['wins']} L={eval_stats['losses']} D={eval_stats['draws']} "
+                        f"score={float(eval_stats['score']):.3f} "
+                        f"vs {eval_stats['heuristic_level']} (sims={eval_stats['sims']})"
+                    )
+                    if float(eval_stats["score"]) > best_eval_score:
+                        best_eval_score = float(eval_stats["score"])
+                        best_path = checkpoint_dir / "best_eval.ckpt"
+                        trainer.save_checkpoint(str(best_path))
+                        _log(f"New best checkpoint saved: {best_path}")
+                except Exception as exc:
+                    _log(f"Eval failed this iteration, continuing training: {exc}")
+
+            save_every = _cfg_int("save_every")
+            if iteration % save_every == 0:
+                manual_ckpt = checkpoint_dir / f"manual_iter_{iteration:03d}.ckpt"
+                try:
+                    trainer.save_checkpoint(str(manual_ckpt))
+                    _log(f"Saved local checkpoint: {manual_ckpt}")
+                    _cleanup_local_checkpoints(
+                        checkpoint_dir=checkpoint_dir,
+                        keep_last_n=_cfg_int("keep_last_n_local_checkpoints"),
+                    )
+                except OSError:
+                    _log("Local checkpoint save failed for this iteration.")
+
+                if hf_checkpointer is not None:
+                    try:
+                        model_path, buffer_path, metadata_path = hf_checkpointer.save_checkpoint_local(
+                            iteration=iteration,
+                            system=system,
+                            buffer=buffer,
+                            config=CONFIG,
+                            stats={
+                                "replay_size": len(buffer),
+                                "best_eval_score": best_eval_score,
+                                **(eval_stats or {}),
+                            },
+                        )
+                        if hf_upload_executor is not None:
+                            future = hf_upload_executor.submit(
+                                hf_checkpointer.upload_checkpoint_files,
+                                iteration=iteration,
+                                model_path=model_path,
+                                buffer_path=buffer_path,
+                                metadata_path=metadata_path,
+                                keep_last_n=_cfg_int("keep_last_n_hf_checkpoints"),
+                            )
+                            hf_upload_futures.append(future)
+                            _log(f"Queued HF upload for iteration {iteration}.")
+                        else:
+                            hf_checkpointer.upload_checkpoint_files(
+                                iteration=iteration,
+                                model_path=model_path,
+                                buffer_path=buffer_path,
+                                metadata_path=metadata_path,
+                                keep_last_n=_cfg_int("keep_last_n_hf_checkpoints"),
+                            )
+                            _log(f"Uploaded HF checkpoint for iteration {iteration}.")
+                    except (OSError, ValueError):
+                        _log("HF upload failed for this iteration.")
+                if _cfg_bool("export_onnx"):
+                    try:
+                        export_onnx(system.model, _cfg_str("onnx_path"), device=device)
+                    except (OSError, RuntimeError, ValueError):
+                        _log("ONNX export failed for this iteration.")
+                else:
+                    _log("ONNX export disabled by config/CLI.")
+                _cleanup_old_log_versions(
+                    log_dir=log_dir,
+                    run_name="ataxx_zero",
+                    keep_last_n=_cfg_int("keep_last_n_log_versions"),
+                )
+    finally:
+        if hf_upload_executor is not None:
+            for future in hf_upload_futures:
+                try:
+                    future.result()
+                except Exception:
+                    _log("A queued HF upload failed.")
+            hf_upload_executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":

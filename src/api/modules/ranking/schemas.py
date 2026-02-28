@@ -72,6 +72,10 @@ class RatingResponse(BaseModel):
     losses: int
     draws: int
     updated_at: datetime
+    league: str
+    division: str
+    lp: int
+    next_major_promo: str | None
 
 
 class LeaderboardEntryResponse(BaseModel):
@@ -94,6 +98,9 @@ class LeaderboardEntryResponse(BaseModel):
 
     season_id: UUID
     user_id: UUID
+    username: str | None = None
+    is_bot: bool = False
+    bot_kind: str | None = None
     rank: int
     rating: float
     wins: int
@@ -101,6 +108,13 @@ class LeaderboardEntryResponse(BaseModel):
     draws: int
     win_rate: float
     computed_at: datetime
+    league: str
+    division: str
+    lp: int
+    recent_lp_delta: int | None = None
+    recent_transition_type: str | None = None
+    next_major_promo: str | None
+    prestige_title: str | None
 
 
 class LeaderboardListResponse(BaseModel):
@@ -117,6 +131,47 @@ class LeaderboardListResponse(BaseModel):
     )
 
     items: list[LeaderboardEntryResponse]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class RatingEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    game_id: UUID
+    user_id: UUID
+    season_id: UUID
+    rating_before: float
+    rating_after: float
+    delta: float
+    before_league: str | None
+    before_division: str | None
+    before_lp: int | None
+    after_league: str | None
+    after_division: str | None
+    after_lp: int | None
+    transition_type: str
+    major_promo_name: str | None
+    created_at: datetime
+
+
+class RatingEventListResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "items": [],
+                "total": 0,
+                "limit": 50,
+                "offset": 0,
+                "has_more": False,
+            }
+        }
+    )
+
+    items: list[RatingEventResponse]
     total: int
     limit: int
     offset: int

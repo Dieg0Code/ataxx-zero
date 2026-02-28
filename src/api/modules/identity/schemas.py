@@ -99,3 +99,93 @@ class UserListResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class BotProfileResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "5f6e8d34-292d-434f-a8ff-f48f4f3040f9",
+                "username": "ub_ai_normal",
+                "bot_kind": "heuristic",
+                "agent_type": "heuristic",
+                "heuristic_level": "normal",
+                "model_mode": None,
+                "enabled": True,
+            }
+        }
+    )
+
+    user_id: UUID
+    username: str
+    bot_kind: BotKind | None
+    agent_type: str
+    heuristic_level: str | None
+    model_mode: str | None
+    enabled: bool
+
+
+class BotProfileListResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "items": [],
+                "total": 0,
+                "limit": 50,
+                "offset": 0,
+                "has_more": False,
+            }
+        }
+    )
+
+    items: list[BotProfileResponse]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class PublicPlayerResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "5f6e8d34-292d-434f-a8ff-f48f4f3040f9",
+                "username": "kernelseraph",
+                "is_bot": True,
+                "bot_kind": "heuristic",
+                "agent_type": "heuristic",
+                "heuristic_level": "hard",
+                "model_mode": None,
+                "enabled": True,
+            }
+        }
+    )
+
+    user_id: UUID
+    username: str
+    is_bot: bool
+    bot_kind: BotKind | None
+    agent_type: str | None
+    heuristic_level: str | None
+    model_mode: str | None
+    enabled: bool | None
+
+
+class PublicPlayerListResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "items": [],
+                "total": 0,
+                "limit": 50,
+                "offset": 0,
+                "has_more": False,
+            }
+        }
+    )
+
+    items: list[PublicPlayerResponse]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool

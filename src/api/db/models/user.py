@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -10,7 +10,7 @@ from api.db.enums import BotKind
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class User(SQLModel, table=True):
@@ -41,3 +41,7 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
     updated_at: datetime = Field(default_factory=utcnow, nullable=False)
     last_seen_at: datetime | None = Field(default=None)
+
+
+
+

@@ -15,14 +15,41 @@ from .rules import is_clone_move, is_jump_move, move_distance, opponent
 from .types import Grid, Move, Player
 
 
+def _build_radius2_targets() -> tuple[tuple[tuple[int, int], ...], ...]:
+    targets: list[tuple[tuple[int, int], ...]] = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            cell_targets: list[tuple[int, int]] = []
+            r_min = max(0, r - 2)
+            r_max = min(BOARD_SIZE, r + 3)
+            c_min = max(0, c - 2)
+            c_max = min(BOARD_SIZE, c + 3)
+            for tr in range(r_min, r_max):
+                for tc in range(c_min, c_max):
+                    if tr == r and tc == c:
+                        continue
+                    cell_targets.append((tr, tc))
+            targets.append(tuple(cell_targets))
+    return tuple(targets)
+
+
+_RADIUS2_TARGETS = _build_radius2_targets()
+
+
 class AtaxxBoard:
     """State and rules for Ataxx."""
 
     def __init__(self, grid: Grid | None = None, player: Player = PLAYER_1) -> None:
         self.grid: Grid
+        self.p1_count: int
+        self.p2_count: int
+        self.empty_count: int
         if grid is None:
             self.grid = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
             self._init_pieces()
+            self.p1_count = 2
+            self.p2_count = 2
+            self.empty_count = BOARD_SIZE * BOARD_SIZE - 4
         else:
             grid_int8 = np.asarray(grid, dtype=np.int8)
             if grid_int8.shape != (BOARD_SIZE, BOARD_SIZE):
@@ -30,6 +57,9 @@ class AtaxxBoard:
                     f"grid must have shape {(BOARD_SIZE, BOARD_SIZE)}, got {grid_int8.shape}"
                 )
             self.grid = grid_int8
+            self.p1_count = int(np.sum(self.grid == PLAYER_1))
+            self.p2_count = int(np.sum(self.grid == PLAYER_2))
+            self.empty_count = int(np.sum(self.grid == EMPTY))
 
         self.current_player: Player = player
         # Variant anti-loop rule: hard cap on total half-moves.
@@ -43,17 +73,35 @@ class AtaxxBoard:
         self.grid[BOARD_SIZE - 1, 0] = PLAYER_2
 
     def copy(self) -> AtaxxBoard:
-        new_board = AtaxxBoard(self.grid.copy(), self.current_player)
+        # Fast internal clone used heavily by MCTS rollouts.
+        # We can bypass __init__ checks because current state is already valid.
+        new_board = object.__new__(AtaxxBoard)
+        new_board.grid = self.grid.copy()
+        new_board.current_player = self.current_player
         new_board.half_moves = self.half_moves
+        new_board.p1_count = self.p1_count
+        new_board.p2_count = self.p2_count
+        new_board.empty_count = self.empty_count
         return new_board
+
+    def copy_from(self, other: AtaxxBoard) -> None:
+        """In-place state copy for hot loops (e.g., MCTS simulations)."""
+        np.copyto(self.grid, other.grid)
+        self.current_player = other.current_player
+        self.half_moves = other.half_moves
+        self.p1_count = other.p1_count
+        self.p2_count = other.p2_count
+        self.empty_count = other.empty_count
 
     def _has_move_for(self, player: Player) -> bool:
         piece_coords = np.argwhere(self.grid == player)
         for r, c in piece_coords:
-            r_min, r_max = max(0, r - 2), min(BOARD_SIZE, r + 3)
-            c_min, c_max = max(0, c - 2), min(BOARD_SIZE, c + 3)
-            if np.any(self.grid[r_min:r_max, c_min:c_max] == EMPTY):
-                return True
+            rr = int(r)
+            cc = int(c)
+            origin_idx = rr * BOARD_SIZE + cc
+            for tr, tc in _RADIUS2_TARGETS[origin_idx]:
+                if self.grid[tr, tc] == EMPTY:
+                    return True
         return False
 
     def get_valid_moves(self, player: Player | None = None) -> list[Move]:
@@ -63,15 +111,12 @@ class AtaxxBoard:
         piece_coords = np.argwhere(self.grid == p)
 
         for r, c in piece_coords:
-            r_min = max(0, r - 2)
-            r_max = min(BOARD_SIZE, r + 3)
-            c_min = max(0, c - 2)
-            c_max = min(BOARD_SIZE, c + 3)
-
-            for tr in range(r_min, r_max):
-                for tc in range(c_min, c_max):
-                    if self.grid[tr, tc] == EMPTY and (r != tr or c != tc):
-                        moves.append((int(r), int(c), tr, tc))
+            rr = int(r)
+            cc = int(c)
+            origin_idx = rr * BOARD_SIZE + cc
+            for tr, tc in _RADIUS2_TARGETS[origin_idx]:
+                if self.grid[tr, tc] == EMPTY:
+                    moves.append((rr, cc, tr, tc))
 
         return moves
 
@@ -105,6 +150,11 @@ class AtaxxBoard:
         dist = move_distance(r_start, c_start, r_end, c_end)
         if is_clone_move(dist):
             self.grid[r_end, c_end] = self.current_player
+            self.empty_count -= 1
+            if self.current_player == PLAYER_1:
+                self.p1_count += 1
+            else:
+                self.p2_count += 1
         elif is_jump_move(dist):
             self.grid[r_end, c_end] = self.current_player
             self.grid[r_start, c_start] = EMPTY
@@ -123,7 +173,15 @@ class AtaxxBoard:
         c_min = max(0, c - 1)
         c_max = min(BOARD_SIZE, c + 2)
         window = self.grid[r_min:r_max, c_min:c_max]
+        converted = int(np.sum(window == enemy))
         window[window == enemy] = self.current_player
+        if converted > 0:
+            if self.current_player == PLAYER_1:
+                self.p1_count += converted
+                self.p2_count -= converted
+            else:
+                self.p2_count += converted
+                self.p1_count -= converted
 
     def is_game_over(self) -> bool:
         """
@@ -133,10 +191,10 @@ class AtaxxBoard:
         3) half-move cap reached (variant anti-loop rule),
         4) both players have no legal moves.
         """
-        if not np.any(self.grid == EMPTY):
+        if self.empty_count == 0:
             return True
 
-        if not np.any(self.grid == PLAYER_1) or not np.any(self.grid == PLAYER_2):
+        if self.p1_count == 0 or self.p2_count == 0:
             return True
 
         if self.half_moves >= 100:
@@ -151,8 +209,8 @@ class AtaxxBoard:
         if not self.is_game_over():
             raise ValueError("Result is only defined when the game is over.")
 
-        p1_count = int(np.sum(self.grid == PLAYER_1))
-        p2_count = int(np.sum(self.grid == PLAYER_2))
+        p1_count = self.p1_count
+        p2_count = self.p2_count
 
         if p1_count == 0:
             return WIN_P2

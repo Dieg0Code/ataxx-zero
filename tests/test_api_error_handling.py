@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -33,6 +33,18 @@ def build_test_app() -> FastAPI:
     @app.get("/db-down")
     def db_down() -> None:
         raise OperationalError("SELECT 1", {}, OSError("connection refused"))
+
+    @app.get("/db-query-error")
+    def db_query_error() -> None:
+        raise DBAPIError("INSERT INTO users ...", {}, Exception("syntax error"), False)
+
+    @app.get("/crash")
+    def crash() -> None:
+        raise RuntimeError("boom")
+
+    @app.get("/bad-value")
+    def bad_value() -> None:
+        raise ValueError("legacy game row has invalid enum")
 
     return app
 
@@ -75,6 +87,40 @@ class TestApiErrorHandling(unittest.TestCase):
         self.assertEqual(payload["error_code"], "service_unavailable")
         self.assertEqual(payload["message"], "Database unavailable")
         self.assertEqual(payload["detail"], "Database unavailable")
+        self.assertIn("request_id", payload)
+
+    def test_generic_db_error_maps_to_500(self) -> None:
+        client = TestClient(build_test_app(), raise_server_exceptions=False)
+        response = client.get("/db-query-error")
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()
+        self.assertEqual(payload["error_code"], "internal_error")
+        self.assertEqual(payload["message"], "Internal server error")
+        self.assertEqual(payload["detail"], "Internal server error")
+        self.assertIn("request_id", payload)
+
+    def test_unhandled_exception_maps_to_500_standard_shape(self) -> None:
+        client = TestClient(build_test_app(), raise_server_exceptions=False)
+        response = client.get("/crash")
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()
+        self.assertEqual(payload["error_code"], "internal_error")
+        self.assertEqual(payload["message"], "Internal server error")
+        self.assertEqual(payload["detail"], "Internal server error")
+        self.assertIn("request_id", payload)
+        self.assertIn("X-Request-ID", response.headers)
+
+    def test_value_error_maps_to_422_standard_shape(self) -> None:
+        client = TestClient(build_test_app(), raise_server_exceptions=False)
+        response = client.get("/bad-value")
+
+        self.assertEqual(response.status_code, 422)
+        payload = response.json()
+        self.assertEqual(payload["error_code"], "validation_error")
+        self.assertEqual(payload["message"], "legacy game row has invalid enum")
+        self.assertEqual(payload["detail"], "legacy game row has invalid enum")
         self.assertIn("request_id", payload)
 
 

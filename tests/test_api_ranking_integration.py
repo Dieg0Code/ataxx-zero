@@ -93,10 +93,15 @@ class TestApiRankingIntegration(unittest.TestCase):
         self.assertEqual(rating["season_id"], season_id)
         self.assertEqual(rating["rating"], 1200.0)
         self.assertEqual(rating["games_played"], 0)
+        self.assertEqual(rating["league"], "Protocol")
+        self.assertEqual(rating["division"], "III")
+        self.assertEqual(rating["lp"], 0)
+        self.assertIsNone(rating["next_major_promo"])
 
         user2 = self._register_and_login("rank-user-2", "rank-user-2@example.com")
         user2_id = user2["user_id"]
         _ = self.client.get(f"/api/v1/ranking/ratings/{user2_id}/{season_id}")
+        self._set_user_as_bot(user2_id)
 
         recompute_resp = self.client.post(
             f"/api/v1/ranking/leaderboard/{season_id}/recompute?limit=10",
@@ -107,6 +112,54 @@ class TestApiRankingIntegration(unittest.TestCase):
         self.assertEqual(len(leaderboard), 2)
         self.assertEqual(leaderboard[0]["rank"], 1)
         self.assertEqual(leaderboard[1]["rank"], 2)
+        self.assertIn("username", leaderboard[0])
+        self.assertIn("username", leaderboard[1])
+        self.assertEqual(leaderboard[0]["username"], "rank-user")
+        self.assertEqual(leaderboard[1]["username"], "rank-user-2")
+        self.assertFalse(leaderboard[0]["is_bot"])
+        self.assertTrue(leaderboard[1]["is_bot"])
+        self.assertIn("league", leaderboard[0])
+        self.assertIn("division", leaderboard[0])
+        self.assertIn("lp", leaderboard[0])
+        self.assertIn("recent_lp_delta", leaderboard[0])
+        self.assertIn("recent_transition_type", leaderboard[0])
+        self.assertIsNone(leaderboard[0]["recent_lp_delta"])
+        self.assertIsNone(leaderboard[0]["recent_transition_type"])
+        self.assertIn("next_major_promo", leaderboard[0])
+        self.assertIn("prestige_title", leaderboard[0])
+        self.assertEqual(leaderboard[0]["prestige_title"], "Singularity")
+        self.assertIsNone(leaderboard[1]["prestige_title"])
+
+        bots_resp = self.client.get(
+            f"/api/v1/ranking/leaderboard/{season_id}?competitor_filter=bots",
+        )
+        self.assertEqual(bots_resp.status_code, 200)
+        bots_items = bots_resp.json()["items"]
+        self.assertEqual(len(bots_items), 1)
+        self.assertEqual(bots_items[0]["username"], "rank-user-2")
+        self.assertTrue(bots_items[0]["is_bot"])
+
+        humans_resp = self.client.get(
+            f"/api/v1/ranking/leaderboard/{season_id}?competitor_filter=humans",
+        )
+        self.assertEqual(humans_resp.status_code, 200)
+        humans_items = humans_resp.json()["items"]
+        self.assertEqual(len(humans_items), 1)
+        self.assertEqual(humans_items[0]["username"], "rank-user")
+        self.assertFalse(humans_items[0]["is_bot"])
+
+        search_resp = self.client.get(
+            f"/api/v1/ranking/leaderboard/{season_id}?q=user-2",
+        )
+        self.assertEqual(search_resp.status_code, 200)
+        search_items = search_resp.json()["items"]
+        self.assertEqual(len(search_items), 1)
+        self.assertEqual(search_items[0]["username"], "rank-user-2")
+
+        invalid_filter_resp = self.client.get(
+            f"/api/v1/ranking/leaderboard/{season_id}?competitor_filter=invalid",
+        )
+        self.assertEqual(invalid_filter_resp.status_code, 400)
 
     def _register_and_login(self, username: str, email: str) -> dict[str, str]:
         register = self.client.post(
@@ -134,6 +187,18 @@ class TestApiRankingIntegration(unittest.TestCase):
                 if user is None:
                     raise AssertionError("User not found for admin promotion")
                 user.is_admin = True
+                session.add(user)
+                await session.commit()
+
+        asyncio.run(_run())
+
+    def _set_user_as_bot(self, user_id: str) -> None:
+        async def _run() -> None:
+            async with self.sessionmaker() as session:
+                user = await session.get(User, UUID(user_id))
+                if user is None:
+                    raise AssertionError("User not found for bot update")
+                user.is_bot = True
                 session.add(user)
                 await session.commit()
 

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from http import HTTPStatus
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import OperationalError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
+
+logger = logging.getLogger("api.errors")
 
 
 def _resolve_request_id(request: Request) -> str:
@@ -68,7 +71,28 @@ def register_error_handlers(app: FastAPI) -> None:
     ) -> Response:
         incoming_request_id = request.headers.get("x-request-id")
         request.state.request_id = incoming_request_id or str(uuid4())
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            request_id = _resolve_request_id(request)
+            status_code = 503 if isinstance(exc, (OperationalError, OSError)) else 500
+            detail = "Database unavailable" if status_code == 503 else "Internal server error"
+            logger.error(
+                "request_failed",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            body = _build_error_body(
+                status_code=status_code,
+                request_id=request_id,
+                detail=detail,
+            )
+            response = JSONResponse(status_code=status_code, content=body)
         response.headers["X-Request-ID"] = request.state.request_id
         return response
 
@@ -100,8 +124,26 @@ def register_error_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(status_code=422, content=body)
 
+    @app.exception_handler(ValueError)
+    async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+        request_id = _resolve_request_id(request)
+        logger.warning(
+            "value_error",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "error_detail": str(exc),
+            },
+        )
+        body = _build_error_body(
+            status_code=422,
+            request_id=request_id,
+            detail=str(exc) or "Invalid value",
+        )
+        return JSONResponse(status_code=422, content=body)
+
     @app.exception_handler(OperationalError)
-    @app.exception_handler(DBAPIError)
     @app.exception_handler(OSError)
     async def database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
         del exc

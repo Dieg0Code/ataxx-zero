@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Rating(SQLModel, table=True):
@@ -23,3 +23,7 @@ class Rating(SQLModel, table=True):
     losses: int = Field(default=0, ge=0)
     draws: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+

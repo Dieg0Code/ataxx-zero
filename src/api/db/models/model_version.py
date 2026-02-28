@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class ModelVersion(SQLModel, table=True):
@@ -23,3 +23,7 @@ class ModelVersion(SQLModel, table=True):
     is_active: bool = Field(default=False, index=True)
     notes: str | None = Field(default=None, max_length=2000)
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+

@@ -8,6 +8,8 @@ from api.db.models import User
 from api.deps.auth import get_admin_user_dep, get_current_user_dep
 from api.deps.identity import get_identity_service_dep
 from api.modules.identity.schemas import (
+    BotProfileListResponse,
+    PublicPlayerListResponse,
     UserCreateRequest,
     UserListResponse,
     UserResponse,
@@ -103,6 +105,72 @@ async def list_users(
     total, users = await identity_service.list_users(limit=safe_limit, offset=safe_offset)
     items = [UserResponse.model_validate(user) for user in users]
     return UserListResponse(
+        items=items,
+        total=total,
+        limit=safe_limit,
+        offset=safe_offset,
+        has_more=(safe_offset + len(items)) < total,
+    )
+
+
+@router.get(
+    "/bots",
+    response_model=BotProfileListResponse,
+    summary="List Playable Bots",
+    description="Returns active bot users with enabled bot profile config.",
+    responses={
+        200: {"description": "Bot list returned."},
+        401: {"description": "Missing or invalid access token."},
+    },
+)
+async def list_playable_bots(
+    limit: int = 50,
+    offset: int = 0,
+    identity_service: IdentityService = IDENTITY_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> BotProfileListResponse:
+    del current_user
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
+    total, items = await identity_service.list_playable_bots(
+        limit=safe_limit,
+        offset=safe_offset,
+    )
+    return BotProfileListResponse(
+        items=items,
+        total=total,
+        limit=safe_limit,
+        offset=safe_offset,
+        has_more=(safe_offset + len(items)) < total,
+    )
+
+
+@router.get(
+    "/players",
+    response_model=PublicPlayerListResponse,
+    summary="List Public Players",
+    description="Returns active public players (humans and visible bots) with optional username filter.",
+    responses={
+        200: {"description": "Player list returned."},
+        401: {"description": "Missing or invalid access token."},
+    },
+)
+async def list_public_players(
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    identity_service: IdentityService = IDENTITY_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> PublicPlayerListResponse:
+    del current_user
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
+    total, items = await identity_service.list_public_players(
+        limit=safe_limit,
+        offset=safe_offset,
+        query=q,
+    )
+    return PublicPlayerListResponse(
         items=items,
         total=total,
         limit=safe_limit,

@@ -17,6 +17,7 @@ class TestApiDbModels(unittest.TestCase):
     def test_expected_tables_are_registered(self) -> None:
         table_names = set(SQLModel.metadata.tables.keys())
         self.assertIn("user", table_names)
+        self.assertIn("botprofile", table_names)
         self.assertIn("game", table_names)
         self.assertIn("gamemove", table_names)
         self.assertIn("leaderboardentry", table_names)
@@ -33,6 +34,14 @@ class TestApiDbModels(unittest.TestCase):
         self.assertIn("bot_kind", users_table.c)
         self.assertIn("is_hidden_bot", users_table.c)
         self.assertIn("model_version_id", users_table.c)
+
+    def test_bot_profile_columns(self) -> None:
+        bot_table = SQLModel.metadata.tables["botprofile"]
+        self.assertIn("user_id", bot_table.c)
+        self.assertIn("agent_type", bot_table.c)
+        self.assertIn("heuristic_level", bot_table.c)
+        self.assertIn("model_mode", bot_table.c)
+        self.assertIn("enabled", bot_table.c)
 
     def test_games_has_training_columns(self) -> None:
         games_table = SQLModel.metadata.tables["game"]

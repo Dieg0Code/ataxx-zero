@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -10,7 +10,7 @@ from api.db.enums import GameSource, PlayerSide, SampleSplit
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class TrainingSample(SQLModel, table=True):
@@ -36,3 +36,7 @@ class TrainingSample(SQLModel, table=True):
     split: SampleSplit = Field(default=SampleSplit.TRAIN, index=True)
     source: GameSource = Field(default=GameSource.SELF_PLAY, index=True)
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+

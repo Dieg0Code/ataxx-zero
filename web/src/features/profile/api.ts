@@ -1,4 +1,4 @@
-import { apiGet } from "@/shared/api/client";
+import { apiDeleteNoContent, apiGet } from "@/shared/api/client";
 
 export type ProfileGame = {
   id: string;
@@ -27,11 +27,27 @@ export type ProfileGamePage = {
   has_more: boolean;
 };
 
-export async function fetchMyGames(accessToken: string, limit = 20, offset = 0): Promise<ProfileGamePage> {
-  return apiGet<ProfileGamePage>(`/api/v1/gameplay/games?limit=${limit}&offset=${offset}`, {
+export async function fetchMyGames(
+  accessToken: string,
+  limit = 20,
+  offset = 0,
+  statuses?: string[],
+): Promise<ProfileGamePage> {
+  const statusQuery =
+    statuses && statuses.length > 0
+      ? `&${statuses.map((status) => `status=${encodeURIComponent(status)}`).join("&")}`
+      : "";
+  return apiGet<ProfileGamePage>(`/api/v1/gameplay/games?limit=${limit}&offset=${offset}${statusQuery}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
   });
 }
 
+export async function deleteMyGame(accessToken: string, gameId: string): Promise<void> {
+  return apiDeleteNoContent(`/api/v1/gameplay/games/${gameId}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+}

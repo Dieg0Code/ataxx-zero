@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
 
     # If set, this value has priority over component-based database settings.
     database_url: str = ""
+    supabase_db_password: str = ""
     supabase_url: str = ""
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
@@ -97,9 +99,16 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_database_url(self) -> str:
         if self.database_url.strip():
+            if self.supabase_db_password.strip() and self._looks_like_supabase_url(
+                self.database_url
+            ):
+                return self._with_overridden_password(
+                    self.database_url,
+                    self.supabase_db_password,
+                )
             return self.database_url
         return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"postgresql+asyncpg://{quote(self.db_user, safe='')}:{quote(self.db_password, safe='')}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
@@ -112,6 +121,33 @@ class Settings(BaseSettings):
     @property
     def redoc_url(self) -> str | None:
         return "/redoc" if self.app_docs_enabled else None
+
+    @staticmethod
+    def _with_overridden_password(database_url: str, raw_password: str) -> str:
+        parsed = urlsplit(database_url)
+        if "@" not in parsed.netloc:
+            return database_url
+        auth_part, host_part = parsed.netloc.rsplit("@", 1)
+        if ":" in auth_part:
+            user_part, _ = auth_part.split(":", 1)
+        else:
+            user_part = auth_part
+        safe_password = quote(raw_password, safe="")
+        new_netloc = f"{user_part}:{safe_password}@{host_part}"
+        return urlunsplit(
+            (
+                parsed.scheme,
+                new_netloc,
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+
+    @staticmethod
+    def _looks_like_supabase_url(database_url: str) -> bool:
+        host = (urlsplit(database_url).hostname or "").lower()
+        return host.endswith("pooler.supabase.com") or host.endswith("supabase.co")
 
 
 @lru_cache(maxsize=1)

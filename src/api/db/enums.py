@@ -57,3 +57,9 @@ class SampleSplit(str, Enum):
     TRAIN = "train"
     VAL = "val"
     TEST = "test"
+
+
+class QueueEntryStatus(str, Enum):
+    WAITING = "waiting"
+    MATCHED = "matched"
+    CANCELED = "canceled"

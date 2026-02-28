@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -10,7 +10,7 @@ from api.db.enums import PlayerSide
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class GameMove(SQLModel, table=True):
@@ -32,3 +32,7 @@ class GameMove(SQLModel, table=True):
     action_idx: int = Field(ge=0)
     value: float
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+

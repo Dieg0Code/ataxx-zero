@@ -8,6 +8,7 @@ import {
   type AuthUser,
   type AuthTokens,
 } from "@/features/auth/api";
+import { AUTH_TOKENS_UPDATED_EVENT } from "@/shared/api/client";
 import { AuthContext, type AuthContextValue } from "@/app/providers/auth-context";
 
 const AUTH_STORAGE_KEY = "ataxx.auth.tokens";
@@ -92,6 +93,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }): JSX.E
       }
     })();
   }, [refreshUser]);
+
+  useEffect(() => {
+    const onTokensUpdated = (event: Event): void => {
+      const custom = event as CustomEvent<StoredTokens | null>;
+      const detail = custom.detail;
+      if (
+        detail !== null &&
+        typeof detail?.accessToken === "string" &&
+        typeof detail?.refreshToken === "string"
+      ) {
+        setTokens((current) => {
+          if (
+            current?.accessToken === detail.accessToken &&
+            current?.refreshToken === detail.refreshToken
+          ) {
+            return current;
+          }
+          return detail;
+        });
+      } else {
+        const stored = loadTokens();
+        setTokens((current) => {
+          if (
+            current?.accessToken === stored?.accessToken &&
+            current?.refreshToken === stored?.refreshToken
+          ) {
+            return current;
+          }
+          return stored;
+        });
+      }
+    };
+
+    window.addEventListener(AUTH_TOKENS_UPDATED_EVENT, onTokensUpdated);
+    return () => window.removeEventListener(AUTH_TOKENS_UPDATED_EVENT, onTokensUpdated);
+  }, []);
 
   const login = useCallback(async (payload: { username_or_email: string; password: string }) => {
     const result = await loginUser(payload);

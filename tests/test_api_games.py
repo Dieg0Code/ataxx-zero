@@ -47,10 +47,12 @@ class _StubGameplayService:
         limit: int = 20,
         offset: int = 0,
         actor_user: User | None = None,
+        statuses: list[GameStatus] | None = None,
     ) -> tuple[int, list[Game]]:
         del limit
         del offset
         del actor_user
+        del statuses
         rows = list(self._games.values())
         return len(rows), rows
 
@@ -60,6 +62,12 @@ class _StubGameplayService:
         if game is None:
             raise LookupError(f"Game not found: {game_id}")
         return game
+
+    async def delete_game(self, game_id: UUID, actor_user: User) -> None:
+        del actor_user
+        if game_id not in self._games:
+            raise LookupError(f"Game not found: {game_id}")
+        del self._games[game_id]
 
 
 class TestApiGames(unittest.TestCase):
@@ -126,6 +134,17 @@ class TestApiGames(unittest.TestCase):
         self.assertEqual(payload["limit"], 10)
         self.assertEqual(len(payload["items"]), 2)
         self.assertEqual(payload["items"][1]["queue_type"], "vs_ai")
+
+    def test_delete_game(self) -> None:
+        client, _ = self._client_with_stub()
+        created = client.post("/api/v1/gameplay/games", json={"queue_type": "casual"})
+        game_id = created.json()["id"]
+
+        deleted = client.delete(f"/api/v1/gameplay/games/{game_id}")
+        self.assertEqual(deleted.status_code, 204)
+
+        missing = client.get(f"/api/v1/gameplay/games/{game_id}")
+        self.assertEqual(missing.status_code, 404)
 
 
 if __name__ == "__main__":

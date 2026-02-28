@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
-from api.db.models import Game, GameMove
+from api.db.models import BotProfile, Game, GameMove, User
 
 
 class MatchesRepository:
@@ -20,6 +20,14 @@ class MatchesRepository:
 
     async def get_game(self, game_id: UUID) -> Game | None:
         return await self.session.get(Game, game_id)
+
+    async def get_user(self, user_id: UUID) -> User | None:
+        return await self.session.get(User, user_id)
+
+    async def get_bot_profile(self, user_id: UUID) -> BotProfile | None:
+        stmt = select(BotProfile).where(BotProfile.user_id == user_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
 
     async def save_game(self, game: Game) -> Game:
         self.session.add(game)

@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.db.models import User
 from api.deps.auth import get_current_user_dep
+from api.deps.inference import get_inference_service_dep
 from api.deps.matches import get_matches_service_dep
 from api.modules.gameplay.schemas import GameResponse
 from api.modules.matches.schemas import (
+    MatchAdvanceBotResponse,
     MatchCreateRequest,
     MatchMovePayload,
     MatchMoveRequest,
@@ -62,6 +64,16 @@ async def post_match(
 ) -> GameResponse:
     try:
         game = await service.create_match(request, actor_user_id=current_user.id)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -275,3 +287,77 @@ async def post_match_move(
             detail=str(exc),
         ) from exc
     return MatchMoveResponse.model_validate(move)
+
+
+@router.post(
+    "/{game_id}/advance-bot",
+    response_model=MatchAdvanceBotResponse,
+    summary="Advance Bot Turn",
+    description="Applies one server-side move for the bot if it is currently the bot turn.",
+    responses={
+        200: {"description": "Bot turn processed."},
+        400: {"description": "Invalid bot state or profile."},
+        401: {"description": "Missing or invalid access token."},
+        403: {"description": "Not allowed to access this match."},
+        404: {"description": "Match not found."},
+        503: {"description": "Inference service unavailable for model bot."},
+    },
+)
+async def post_advance_bot(
+    game_id: UUID,
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> MatchAdvanceBotResponse:
+    inference_service = None
+    try:
+        inference_service = get_inference_service_dep()
+    except HTTPException:
+        inference_service = None
+    try:
+        move = await service.advance_bot_turn(
+            game_id=game_id,
+            actor_user=current_user,
+            inference_service=inference_service,
+        )
+        game = await service.get_match(game_id)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    if game is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Match not found: {game_id}",
+        )
+    if move is None:
+        return MatchAdvanceBotResponse(
+            game_id=game_id,
+            applied=False,
+            status=game.status,
+            message="No bot move applied.",
+            move=None,
+        )
+    return MatchAdvanceBotResponse(
+        game_id=game_id,
+        applied=True,
+        status=game.status,
+        message="Bot move applied.",
+        move=MatchMoveResponse.model_validate(move),
+    )

@@ -1,15 +1,19 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID
 
+import numpy as np
+
+from agents.heuristic import heuristic_move
 from api.db.enums import (
+    AgentType,
     GameStatus,
     PlayerSide,
     TerminationReason,
     WinnerSide,
 )
-from api.db.models import Game, GameMove, User
+from api.db.models import BotProfile, Game, GameMove, User
 from api.modules.matches.repository import MatchesRepository
 from api.modules.matches.schemas import MatchCreateRequest, MatchMoveRequest
 from api.modules.ranking.service import RankingService
@@ -17,6 +21,7 @@ from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
 from game.constants import PLAYER_1
 from game.serialization import board_from_state, board_to_state
+from inference.service import InferenceService
 
 
 class MatchesService:
@@ -29,9 +34,21 @@ class MatchesService:
         self.ranking_service = ranking_service
 
     async def create_match(self, payload: MatchCreateRequest, actor_user_id: UUID) -> Game:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         if payload.player1_id is not None and payload.player1_id != actor_user_id:
             raise PermissionError("player1_id must match the authenticated user.")
+
+        player2_agent = payload.player2_agent
+        model_version_id = payload.model_version_id
+        if payload.player2_id is not None:
+            player2 = await self.repository.get_user(payload.player2_id)
+            if player2 is None:
+                raise LookupError(f"User not found: {payload.player2_id}")
+            if player2.is_bot:
+                profile = await self._get_enabled_bot_profile(player2.id)
+                player2_agent = profile.agent_type
+                if profile.agent_type == AgentType.MODEL and model_version_id is None:
+                    model_version_id = player2.model_version_id
 
         game = Game(
             season_id=payload.season_id,
@@ -40,9 +57,10 @@ class MatchesService:
             rated=payload.rated,
             player1_id=actor_user_id,
             player2_id=payload.player2_id,
+            created_by_user_id=actor_user_id,
             player1_agent=payload.player1_agent,
-            player2_agent=payload.player2_agent,
-            model_version_id=payload.model_version_id,
+            player2_agent=player2_agent,
+            model_version_id=model_version_id,
             source=payload.source,
             is_training_eligible=payload.is_training_eligible,
             started_at=now,
@@ -60,7 +78,7 @@ class MatchesService:
         is_admin = bool(getattr(actor_user, "is_admin", False))
         if is_admin:
             return
-        if actor_user_id in (game.player1_id, game.player2_id):
+        if actor_user_id in (game.player1_id, game.player2_id, game.created_by_user_id):
             return
         raise PermissionError("Authenticated user is not allowed to view this match.")
 
@@ -138,6 +156,97 @@ class MatchesService:
         await self._update_game_terminal_state(game=game, board=board)
         return stored
 
+    async def advance_bot_turn(
+        self,
+        game_id: UUID,
+        actor_user: User,
+        inference_service: InferenceService | None = None,
+    ) -> GameMove | None:
+        game = await self.repository.get_game(game_id)
+        if game is None:
+            raise LookupError(f"Match not found: {game_id}")
+        await self.ensure_can_view_match(game_id=game_id, actor_user=actor_user)
+        if game.status == GameStatus.FINISHED:
+            return None
+
+        board = await self.get_current_board(game_id)
+        bot_side = self._to_side(board.current_player)
+        bot_user_id = game.player1_id if bot_side == PlayerSide.P1 else game.player2_id
+        if bot_user_id is None:
+            raise ValueError("Current turn is not assigned to a user.")
+
+        bot_user = await self.repository.get_user(bot_user_id)
+        if bot_user is None:
+            raise LookupError(f"User not found: {bot_user_id}")
+        if not bot_user.is_bot:
+            raise ValueError("Current turn does not belong to a bot.")
+
+        profile = await self._get_enabled_bot_profile(bot_user.id)
+        legal_moves = board.get_valid_moves()
+
+        mode: str
+        action_idx: int
+        value: float
+        selected_move: tuple[int, int, int, int] | None
+        if profile.agent_type == AgentType.HEURISTIC:
+            level = profile.heuristic_level or "normal"
+            if level not in {"easy", "normal", "hard"}:
+                raise ValueError("Invalid heuristic_level for bot profile.")
+            mode = f"heuristic_{level}"
+            selected_move = heuristic_move(
+                board=board,
+                rng=np.random.default_rng(),
+                level=level,
+            )
+            action_idx = (
+                ACTION_SPACE.pass_index
+                if selected_move is None
+                else ACTION_SPACE.encode(selected_move)
+            )
+            value = 0.0
+        elif profile.agent_type == AgentType.MODEL:
+            if inference_service is None:
+                raise RuntimeError("Inference service is required for model bots.")
+            model_mode = profile.model_mode or "fast"
+            if model_mode not in {"fast", "strong"}:
+                raise ValueError("Invalid model_mode for bot profile.")
+            prediction = inference_service.predict(board=board, mode=model_mode)
+            selected_move = prediction.move
+            mode = prediction.mode
+            action_idx = prediction.action_idx
+            value = prediction.value
+        else:
+            raise ValueError("Unsupported bot agent type.")
+
+        if selected_move is None and legal_moves:
+            raise ValueError("Bot selected pass while legal moves are available.")
+        if selected_move is not None and selected_move not in legal_moves:
+            raise ValueError("Bot selected an illegal move.")
+
+        board_before = board_to_state(board)
+        board.step(selected_move)
+        board_after = board_to_state(board)
+        ply = await self.repository.next_ply(game_id)
+
+        stored = await self.repository.create_move(
+            GameMove(
+                game_id=game_id,
+                ply=ply,
+                player_side=bot_side,
+                r1=selected_move[0] if selected_move else None,
+                c1=selected_move[1] if selected_move else None,
+                r2=selected_move[2] if selected_move else None,
+                c2=selected_move[3] if selected_move else None,
+                board_before=board_before,
+                board_after=board_after,
+                mode=mode,
+                action_idx=action_idx,
+                value=value,
+            )
+        )
+        await self._update_game_terminal_state(game=game, board=board)
+        return stored
+
     @staticmethod
     def _resolve_actor_side(game: Game, actor_user_id: UUID) -> PlayerSide:
         if game.player1_id is None or game.player2_id is None:
@@ -170,7 +279,7 @@ class MatchesService:
 
         game.status = GameStatus.FINISHED
         game.termination_reason = TerminationReason.NORMAL
-        game.ended_at = datetime.now(timezone.utc)
+        game.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self.repository.save_game(game)
 
         if (
@@ -188,7 +297,23 @@ class MatchesService:
                 player2_id=game.player2_id,
                 winner_side=game.winner_side,
             )
+            # Keep public leaderboard in sync with the latest rated result.
+            await self.ranking_service.recompute_leaderboard(
+                season_id=game.season_id,
+                limit=500,
+            )
 
     @staticmethod
     def _to_side(player: int) -> PlayerSide:
         return PlayerSide.P1 if player == PLAYER_1 else PlayerSide.P2
+
+    async def _get_enabled_bot_profile(self, user_id: UUID) -> BotProfile:
+        profile = await self.repository.get_bot_profile(user_id)
+        if profile is None or not profile.enabled:
+            raise ValueError("Bot profile is missing or disabled.")
+        if profile.agent_type not in {AgentType.HEURISTIC, AgentType.MODEL}:
+            raise ValueError("Bot profile agent_type must be heuristic or model.")
+        return profile
+
+
+

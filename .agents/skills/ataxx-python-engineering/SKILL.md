@@ -48,6 +48,67 @@ Do not finish with failing lint/type/tests.
   - `src/ui`: pygame client
   - `src/api`: backend service
 
+## UI Contract (Web)
+
+When changing `web/`, enforce a consistent design system and interaction model.
+
+- Semantic action hierarchy:
+  - `primary`: only for the main CTA in a section/screen.
+  - `secondary`: default navigation and neutral actions.
+  - `dangerSoft`: destructive entry action (e.g., "Eliminar" in lists).
+  - `danger`: destructive confirmation action (e.g., modal confirm).
+  - `ghost/tertiary`: low-emphasis utility actions.
+- Never use `primary` styling for routine navigation actions like "Detalle".
+- Prefer component variants over inline ad-hoc styling:
+  - if a button/badge/card semantic exists, use it instead of custom one-off classes.
+- Modal requirements:
+  - themed overlay/background,
+  - keyboard close via `Esc`,
+  - click-away close,
+  - body scroll lock while open,
+  - clear destructive hierarchy (`Cancelar` vs confirm action).
+- Status presentation:
+  - do not encode state using color alone; include explicit text labels.
+- Scrollbars in custom panels must use project-themed styles; avoid browser-default white scrollbars.
+- Motion guidelines:
+  - short transitions for hover/focus,
+  - medium transitions for panel/modal enter-exit,
+  - avoid noisy animation on non-critical UI.
+- Design quality gate for UI PRs:
+  - check button hierarchy on affected screens,
+  - verify modal behavior and keyboard accessibility,
+  - verify visual consistency with existing theme tokens in `web/src/shared/styles/`.
+
+## Visual Language & Lore Guardrails
+
+Use a consistent narrative and visual tone across the web UI.
+
+- Core fantasy:
+  - The board is the "hot zone" (highest visual intensity).
+  - The opponent AI should feel dangerous and highly strategic.
+  - Lore is suggested through atmosphere, not repeated literal text.
+- Tone:
+  - Minimal, tactical, high-signal UI.
+  - Avoid excessive copy; prefer short labels and meaningful status.
+  - Do not spam words like "alien", "malware", "IA", etc. in every section.
+- Iconography-first communication:
+  - Prefer icon + short label over long explanatory paragraphs.
+  - Use icons to reinforce intent:
+    - navigation/info (`Compass`, `Info`, `Clock`, `History`),
+    - competition (`Trophy`, `Shield`, `Swords`),
+    - danger/destructive (`AlertTriangle`, `Trash2`),
+    - system/AI (`Cpu`, `Radar`, `Sparkles`).
+  - Icons must not replace critical text entirely; keep compact accessible labels.
+- Visual emphasis rules:
+  - Board interactions and match-critical states can use richer motion/glow.
+  - Surrounding pages (profile, ranking, landing) should remain calmer/subtler.
+  - If something is not gameplay-critical, reduce visual intensity.
+- Copy rules:
+  - Spanish-first UX text.
+  - Prefer concise, concrete microcopy.
+  - Replace technical/internal wording with player-facing wording.
+  - Keep status labels normalized and consistent across screens.
+
 ## Change Strategy
 
 - Prefer small PR-like commits in spirit: one intent per change.

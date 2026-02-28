@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+import logging
+from typing import Annotated
 from uuid import UUID
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from sqlalchemy.exc import IntegrityError
 
 from agents.heuristic import heuristic_move
 from agents.random_agent import random_move
-from api.db.models import User
-from api.deps.auth import get_current_user_dep
+from api.db.enums import GameStatus
+from api.db.models import Game, User
+from api.deps.auth import get_auth_service_dep, get_current_user_dep
 from api.deps.gameplay import get_gameplay_service_dep
 from api.deps.inference import get_inference_service_dep
+from api.modules.auth.service import AuthService
 from api.modules.gameplay.schemas import (
     GameCreateRequest,
     GameListResponse,
@@ -23,6 +36,7 @@ from api.modules.gameplay.schemas import (
     StoredMoveResponse,
 )
 from api.modules.gameplay.service import GameplayService
+from api.modules.gameplay.ws import gameplay_ws_hub
 from game.actions import ACTION_SPACE
 from game.serialization import board_from_state
 from inference.service import InferenceService
@@ -31,6 +45,43 @@ router = APIRouter(prefix="/gameplay", tags=["gameplay"])
 INFERENCE_SERVICE_DEP = Depends(get_inference_service_dep)
 GAMEPLAY_SERVICE_DEP = Depends(get_gameplay_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
+AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
+logger = logging.getLogger(__name__)
+
+
+async def _to_game_response(
+    gameplay_service: GameplayService,
+    game: Game,
+) -> GameResponse:
+    get_usernames = getattr(gameplay_service, "get_player_usernames", None)
+    if get_usernames is None:
+        player1_username, player2_username = None, None
+    else:
+        player1_username, player2_username = await get_usernames(game)
+    validated = GameResponse.model_validate(game)
+    validated.player1_username = player1_username
+    validated.player2_username = player2_username
+    return validated
+
+
+async def _broadcast_move_applied(
+    gameplay_service: GameplayService,
+    game_id: UUID,
+    stored_move: StoredMoveResponse,
+) -> None:
+    game = await gameplay_service.get_game(game_id)
+    if game is None:
+        return
+    game_payload = await _to_game_response(gameplay_service, game)
+    await gameplay_ws_hub.broadcast(
+        game_id=game_id,
+        payload={
+            "type": "game.move.applied",
+            "game_id": str(game_id),
+            "move": stored_move.model_dump(mode="json"),
+            "game": game_payload.model_dump(mode="json"),
+        },
+    )
 
 
 @router.post(
@@ -151,12 +202,22 @@ async def post_game(
 ) -> GameResponse:
     try:
         game = await gameplay_service.create_game(request, actor_user=current_user)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
     except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
-    return GameResponse.model_validate(game)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return await _to_game_response(gameplay_service, game)
 
 
 @router.get(
@@ -214,7 +275,12 @@ async def get_game(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
-    return GameResponse.model_validate(game)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Game row is invalid/corrupt for API model: {exc}",
+        ) from exc
+    return await _to_game_response(gameplay_service, game)
 
 
 @router.get(
@@ -249,17 +315,48 @@ async def get_game(
 async def list_games(
     limit: int = 20,
     offset: int = 0,
+    status_filter: Annotated[list[str] | None, Query(alias="status")] = None,
     gameplay_service: GameplayService = GAMEPLAY_SERVICE_DEP,
     current_user: User = CURRENT_USER_DEP,
 ) -> GameListResponse:
     safe_limit = max(1, min(limit, 200))
     safe_offset = max(0, offset)
-    total, games = await gameplay_service.list_games(
-        limit=safe_limit,
-        offset=safe_offset,
-        actor_user=current_user,
-    )
-    items = [GameResponse.model_validate(game) for game in games]
+    statuses = None
+    if status_filter:
+        allowed_statuses = {enum_value.value: enum_value for enum_value in GameStatus}
+        invalid_values = [value for value in status_filter if value not in allowed_statuses]
+        if invalid_values:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid status filter values: {', '.join(invalid_values)}",
+            )
+        statuses = [allowed_statuses[value] for value in status_filter]
+    try:
+        total, games = await gameplay_service.list_games(
+            limit=safe_limit,
+            offset=safe_offset,
+            actor_user=current_user,
+            statuses=statuses,
+        )
+    except ValueError:
+        logger.warning(
+            "Returning empty game list due to invalid/corrupt rows.",
+            extra={"user_id": str(current_user.id), "limit": safe_limit, "offset": safe_offset},
+        )
+        return GameListResponse(
+            items=[],
+            total=0,
+            limit=safe_limit,
+            offset=safe_offset,
+            has_more=False,
+        )
+    items: list[GameResponse] = []
+    for game in games:
+        try:
+            items.append(await _to_game_response(gameplay_service, game))
+        except ValueError:
+            # Defensive path for legacy/corrupt rows. Do not fail the whole list.
+            logger.warning("Skipping invalid game row during list.", extra={"game_id": str(game.id)})
     return GameListResponse(
         items=items,
         total=total,
@@ -349,7 +446,13 @@ async def post_game_move(
             detail=str(exc),
         ) from exc
 
-    return StoredMoveResponse.model_validate(stored)
+    payload = StoredMoveResponse.model_validate(stored)
+    await _broadcast_move_applied(
+        gameplay_service=gameplay_service,
+        game_id=game_id,
+        stored_move=payload,
+    )
+    return payload
 
 
 @router.post(
@@ -380,6 +483,7 @@ async def post_game_manual_move(
             board=board,
             move=move,
             actor_user=current_user,
+            mode=request.mode,
         )
     except LookupError as exc:
         raise HTTPException(
@@ -397,7 +501,64 @@ async def post_game_manual_move(
             detail=str(exc),
         ) from exc
 
-    return StoredMoveResponse.model_validate(stored)
+    payload = StoredMoveResponse.model_validate(stored)
+    await _broadcast_move_applied(
+        gameplay_service=gameplay_service,
+        game_id=game_id,
+        stored_move=payload,
+    )
+    return payload
+
+
+@router.websocket("/games/{game_id}/ws")
+async def gameplay_game_ws(
+    websocket: WebSocket,
+    game_id: UUID,
+    token: str | None = Query(default=None),
+    gameplay_service: GameplayService = GAMEPLAY_SERVICE_DEP,
+    auth_service: AuthService = AUTH_SERVICE_DEP,
+) -> None:
+    if token is None or len(token.strip()) == 0:
+        await websocket.close(code=4401, reason="Missing token.")
+        return
+
+    try:
+        actor_user = await auth_service.get_user_from_access_token(token)
+    except PermissionError:
+        await websocket.close(code=4401, reason="Invalid token.")
+        return
+
+    try:
+        game = await gameplay_service.ensure_can_view_game(
+            game_id=game_id,
+            actor_user=actor_user,
+        )
+    except LookupError:
+        await websocket.close(code=4404, reason="Game not found.")
+        return
+    except PermissionError:
+        await websocket.close(code=4403, reason="Not allowed.")
+        return
+    except ValueError:
+        await websocket.close(code=4400, reason="Invalid game row.")
+        return
+
+    await gameplay_ws_hub.connect(game_id=game_id, websocket=websocket)
+    try:
+        await gameplay_ws_hub.send_personal(
+            websocket,
+            {
+                "type": "game.subscribed",
+                "game_id": str(game_id),
+                "status": game.status.value,
+            },
+        )
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await gameplay_ws_hub.disconnect(game_id=game_id, websocket=websocket)
 
 
 @router.get(
@@ -527,8 +688,78 @@ async def get_game_replay(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
-    moves = await gameplay_service.list_game_moves(game_id=game_id, limit=500)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Game row is invalid/corrupt for replay: {exc}",
+        ) from exc
+
+    try:
+        moves = await gameplay_service.list_game_moves(game_id=game_id, limit=500)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Move rows are invalid/corrupt for replay: {exc}",
+        ) from exc
+
+    safe_moves: list[StoredMoveResponse] = []
+    for move in moves:
+        try:
+            safe_moves.append(StoredMoveResponse.model_validate(move))
+        except ValueError:
+            # Defensive path for legacy/corrupt rows. Keep replay available.
+            continue
+
+    try:
+        game_payload = await _to_game_response(gameplay_service, game)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Game row is invalid/corrupt for replay payload: {exc}",
+        ) from exc
+
     return GameReplayResponse(
-        game=GameResponse.model_validate(game),
-        moves=[StoredMoveResponse.model_validate(move) for move in moves],
+        game=game_payload,
+        moves=safe_moves,
     )
+
+
+@router.delete(
+    "/games/{game_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete Game",
+    description="Deletes a game and its moves. Allowed for participants or admin.",
+    responses={
+        204: {"description": "Game deleted."},
+        401: {"description": "Missing or invalid access token."},
+        403: {"description": "Not allowed to delete this game."},
+        404: {"description": "Game not found."},
+    },
+)
+async def delete_game(
+    game_id: UUID,
+    gameplay_service: GameplayService = GAMEPLAY_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> None:
+    try:
+        await gameplay_service.delete_game(game_id=game_id, actor_user=current_user)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Game row is invalid/corrupt for delete: {exc}",
+        ) from exc
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Game cannot be deleted due to related records: {exc.orig}",
+        ) from exc

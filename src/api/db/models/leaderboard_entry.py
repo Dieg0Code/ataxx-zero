@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class LeaderboardEntry(SQLModel, table=True):
@@ -26,3 +26,7 @@ class LeaderboardEntry(SQLModel, table=True):
     draws: int = Field(default=0, ge=0)
     win_rate: float = Field(default=0.0)
     computed_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+

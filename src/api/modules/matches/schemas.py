@@ -113,3 +113,34 @@ class MatchStateResponse(BaseModel):
     board: dict[str, object]
     next_player_side: PlayerSide
     legal_moves: list[MatchMovePayload]
+
+
+class MatchAdvanceBotResponse(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "game_id": "55127c32-ec70-4ef3-8b6e-f28588f16cb0",
+                "applied": True,
+                "status": "in_progress",
+                "message": "Bot move applied.",
+                "move": {
+                    "id": "8cdca658-1257-44b8-b338-a568ecad53c3",
+                    "game_id": "55127c32-ec70-4ef3-8b6e-f28588f16cb0",
+                    "ply": 1,
+                    "player_side": "p2",
+                    "r1": 0,
+                    "c1": 6,
+                    "r2": 1,
+                    "c2": 5,
+                    "action_idx": 128,
+                    "mode": "heuristic_normal",
+                },
+            }
+        }
+    )
+
+    game_id: UUID
+    applied: bool
+    status: GameStatus
+    message: str
+    move: MatchMoveResponse | None

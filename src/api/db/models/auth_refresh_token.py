@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class AuthRefreshToken(SQLModel, table=True):
@@ -22,3 +22,7 @@ class AuthRefreshToken(SQLModel, table=True):
     expires_at: datetime = Field(nullable=False, index=True)
     revoked_at: datetime | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
+
+
+
+
