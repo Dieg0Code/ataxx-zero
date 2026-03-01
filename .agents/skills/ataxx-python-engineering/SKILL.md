@@ -48,6 +48,23 @@ Do not finish with failing lint/type/tests.
   - `src/ui`: pygame client
   - `src/api`: backend service
 
+## Educational Commenting Policy
+
+This repository is educational, so comments must teach intent, not restate syntax.
+
+- Add minimal, high-signal comments in non-trivial code paths.
+- Prefer short comments that answer:
+  - why this logic exists,
+  - what invariant/assumption must hold,
+  - what failure mode is being prevented.
+- Do not add noise comments for obvious lines (e.g., "assign variable", "loop over list").
+- Favor one good comment before a dense block over many inline comments.
+- Keep comments resilient to refactors:
+  - avoid mentioning transient details unless they are required constraints.
+- When implementing algorithms (MCTS, training targets, replay shaping, serialization constraints),
+  add at least one pedagogical comment describing the perspective/sign convention or invariant.
+- For bug fixes, include a brief comment near the fix explaining the original failure mode.
+
 ## UI Contract (Web)
 
 When changing `web/`, enforce a consistent design system and interaction model.

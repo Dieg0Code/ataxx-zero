@@ -1,0 +1,127 @@
+name: RunPod Train Reconcile (Pulumi)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Pulumi stack (org/stack)"
+        required: true
+        default: "dieg0code/train"
+  schedule:
+    - cron: "*/30 * * * *"
+
+concurrency:
+  group: runpod-train-reconcile
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PULUMI_SKIP_UPDATE_CHECK: "true"
+      RUNPOD_API_TOKEN: ${{ secrets.RUNPOD_API_TOKEN }}
+      PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+      STACK_NAME: ${{ github.event.inputs.stack || vars.RUNPOD_TRAIN_STACK || 'dieg0code/train' }}
+
+    steps:
+      - name: Validate required secrets
+        run: |
+          test -n "${RUNPOD_API_TOKEN}" || (echo "Missing RUNPOD_API_TOKEN" && exit 1)
+          test -n "${PULUMI_ACCESS_TOKEN}" || (echo "Missing PULUMI_ACCESS_TOKEN" && exit 1)
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Pulumi CLI
+        uses: pulumi/actions@v6
+        with:
+          command: version
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install stack dependencies
+        working-directory: infra/runpod-train
+        run: pip install -r requirements.txt
+
+      - name: Login to Pulumi Cloud
+        run: pulumi login
+
+      - name: Select stack
+        working-directory: infra/runpod-train
+        run: pulumi stack select "${STACK_NAME}"
+
+      - name: Ensure provider token exists
+        working-directory: infra/runpod-train
+        run: pulumi config set runpod:token "${RUNPOD_API_TOKEN}" --secret
+
+      - name: Read pod id from stack
+        id: pod
+        working-directory: infra/runpod-train
+        run: |
+          POD_ID=$(pulumi stack output podId 2>/dev/null || true)
+          echo "pod_id=${POD_ID}" >> "$GITHUB_OUTPUT"
+          echo "pod_id=${POD_ID}"
+
+      - name: Exit when no active pod is tracked
+        if: steps.pod.outputs.pod_id == ''
+        run: echo "No pod tracked in stack; nothing to reconcile."
+
+      - name: Query pod status
+        if: steps.pod.outputs.pod_id != ''
+        id: status
+        env:
+          POD_ID: ${{ steps.pod.outputs.pod_id }}
+        run: |
+          response=$(curl -sS \
+            -H "Authorization: Bearer ${RUNPOD_API_TOKEN}" \
+            "https://rest.runpod.io/v1/pods/${POD_ID}")
+          desired=$(echo "${response}" | jq -r '.desiredStatus // "unknown"')
+          runtime=$(echo "${response}" | jq -r '.runtime.status // "unknown"')
+          echo "desired=${desired}" >> "$GITHUB_OUTPUT"
+          echo "runtime=${runtime}" >> "$GITHUB_OUTPUT"
+          echo "desiredStatus=${desired} runtime.status=${runtime}"
+
+      - name: Destroy terminal pod
+        if: >
+          steps.pod.outputs.pod_id != '' &&
+          (
+            steps.status.outputs.desired == 'STOPPED' ||
+            steps.status.outputs.desired == 'TERMINATED' ||
+            steps.status.outputs.runtime == 'EXITED' ||
+            steps.status.outputs.runtime == 'FAILED'
+          )
+        working-directory: infra/runpod-train
+        run: pulumi destroy --yes --skip-preview
+
+      - name: Remove stack after destroy
+        if: >
+          steps.pod.outputs.pod_id != '' &&
+          (
+            steps.status.outputs.desired == 'STOPPED' ||
+            steps.status.outputs.desired == 'TERMINATED' ||
+            steps.status.outputs.runtime == 'EXITED' ||
+            steps.status.outputs.runtime == 'FAILED'
+          )
+        working-directory: infra/runpod-train
+        run: pulumi stack rm "${STACK_NAME}" --yes
+
+      - name: Keep running pod
+        if: >
+          steps.pod.outputs.pod_id != '' &&
+          !(
+            steps.status.outputs.desired == 'STOPPED' ||
+            steps.status.outputs.desired == 'TERMINATED' ||
+            steps.status.outputs.runtime == 'EXITED' ||
+            steps.status.outputs.runtime == 'FAILED'
+          )
+        run: |
+          echo "Pod still running. Reconcile will check again on next run."

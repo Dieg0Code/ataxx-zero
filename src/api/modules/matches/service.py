@@ -8,8 +8,10 @@ import numpy as np
 from agents.heuristic import heuristic_move
 from api.db.enums import (
     AgentType,
+    GameSource,
     GameStatus,
     PlayerSide,
+    QueueType,
     TerminationReason,
     WinnerSide,
 )
@@ -67,6 +69,120 @@ class MatchesService:
         )
         return await self.repository.create_game(game)
 
+    async def create_invitation(
+        self,
+        *,
+        actor_user_id: UUID,
+        opponent_user_id: UUID,
+        rated: bool = True,
+        season_id: UUID | None = None,
+    ) -> Game:
+        if actor_user_id == opponent_user_id:
+            raise ValueError("No puedes invitarte a ti mismo.")
+
+        opponent = await self.repository.get_user(opponent_user_id)
+        if opponent is None:
+            raise LookupError(f"User not found: {opponent_user_id}")
+
+        resolved_season_id = season_id
+        if rated and resolved_season_id is None:
+            if self.ranking_service is None:
+                raise RuntimeError("Ranking service is required for rated invitations.")
+            active_season = await self.ranking_service.get_active_season()
+            if active_season is None:
+                raise LookupError("No active season found.")
+            resolved_season_id = active_season.id
+
+        if opponent.is_bot:
+            profile = await self._get_enabled_bot_profile(opponent.id)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            return await self.repository.create_game(
+                Game(
+                    season_id=resolved_season_id,
+                    queue_type=QueueType.CUSTOM,
+                    status=GameStatus.IN_PROGRESS,
+                    rated=rated,
+                    player1_id=actor_user_id,
+                    player2_id=opponent_user_id,
+                    created_by_user_id=actor_user_id,
+                    player1_agent=AgentType.HUMAN,
+                    player2_agent=profile.agent_type,
+                    model_version_id=opponent.model_version_id
+                    if profile.agent_type == AgentType.MODEL
+                    else None,
+                    source=GameSource.HUMAN,
+                    is_training_eligible=False,
+                    started_at=now,
+                    ended_at=None,
+                )
+            )
+
+        game = Game(
+            season_id=resolved_season_id,
+            queue_type=QueueType.CUSTOM,
+            status=GameStatus.PENDING,
+            rated=rated,
+            player1_id=actor_user_id,
+            player2_id=opponent_user_id,
+            created_by_user_id=actor_user_id,
+            player1_agent=AgentType.HUMAN,
+            player2_agent=AgentType.HUMAN,
+            source=GameSource.HUMAN,
+            is_training_eligible=False,
+            started_at=None,
+            ended_at=None,
+        )
+        return await self.repository.create_game(game)
+
+    async def list_incoming_invitations(
+        self,
+        *,
+        actor_user_id: UUID,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[int, list[Game]]:
+        safe_limit = max(1, min(limit, 100))
+        safe_offset = max(0, offset)
+        total = await self.repository.count_incoming_invitations(actor_user_id)
+        items = await self.repository.list_incoming_invitations(
+            user_id=actor_user_id,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        return total, items
+
+    async def accept_invitation(self, *, game_id: UUID, actor_user: User) -> Game:
+        game = await self.repository.get_game(game_id)
+        if game is None:
+            raise LookupError(f"Match not found: {game_id}")
+        if game.status != GameStatus.PENDING:
+            raise ValueError("Invitation already resolved.")
+        if game.player2_id != actor_user.id and not actor_user.is_admin:
+            raise PermissionError("Solo el rival invitado puede aceptar esta solicitud.")
+        if game.player1_agent != AgentType.HUMAN or game.player2_agent != AgentType.HUMAN:
+            raise ValueError("La invitacion no es un duelo humano vs humano.")
+
+        game.status = GameStatus.IN_PROGRESS
+        game.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        return await self.repository.save_game(game)
+
+    async def reject_invitation(self, *, game_id: UUID, actor_user: User) -> Game:
+        game = await self.repository.get_game(game_id)
+        if game is None:
+            raise LookupError(f"Match not found: {game_id}")
+        if game.status != GameStatus.PENDING:
+            raise ValueError("Invitation already resolved.")
+        is_participant = actor_user.id in (game.player1_id, game.player2_id)
+        if not is_participant and not actor_user.is_admin:
+            raise PermissionError("No puedes rechazar esta solicitud.")
+        if game.player1_agent != AgentType.HUMAN or game.player2_agent != AgentType.HUMAN:
+            raise ValueError("La invitacion no es un duelo humano vs humano.")
+
+        game.status = GameStatus.ABORTED
+        game.termination_reason = TerminationReason.DISCONNECT
+        game.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        return await self.repository.save_game(game)
+
     async def get_match(self, game_id: UUID) -> Game | None:
         return await self.repository.get_game(game_id)
 
@@ -102,6 +218,8 @@ class MatchesService:
             raise LookupError(f"Match not found: {game_id}")
         if game.status == GameStatus.FINISHED:
             raise ValueError("Match already finished.")
+        if game.status != GameStatus.IN_PROGRESS:
+            raise ValueError("Match is not in progress.")
 
         actor_side = self._resolve_actor_side(game=game, actor_user_id=actor_user_id)
 

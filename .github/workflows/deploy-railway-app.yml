@@ -1,0 +1,59 @@
+name: Deploy Railway App
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "src/**"
+      - "web/**"
+      - "alembic/**"
+      - "alembic.ini"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - ".railwayignore"
+      - ".github/workflows/deploy-railway-app.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-railway-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+
+    steps:
+      - name: Validate Railway secrets
+        run: |
+          test -n "${RAILWAY_TOKEN}" || (echo "Missing secret: RAILWAY_TOKEN" && exit 1)
+          test -n "${RAILWAY_PROJECT_ID}" || (echo "Missing secret: RAILWAY_PROJECT_ID" && exit 1)
+          test -n "${RAILWAY_ENVIRONMENT_ID}" || (echo "Missing secret: RAILWAY_ENVIRONMENT_ID" && exit 1)
+          test -n "${RAILWAY_SERVICE_ID}" || (echo "Missing secret: RAILWAY_SERVICE_ID" && exit 1)
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway (CI mode)
+        run: |
+          railway up \
+            --ci \
+            --project "${RAILWAY_PROJECT_ID}" \
+            --environment "${RAILWAY_ENVIRONMENT_ID}" \
+            --service "${RAILWAY_SERVICE_ID}"

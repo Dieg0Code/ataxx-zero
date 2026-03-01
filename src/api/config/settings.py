@@ -54,10 +54,12 @@ class Settings(BaseSettings):
 
     # Inference/runtime configuration
     model_checkpoint_path: str = "checkpoints/last.ckpt"
+    model_onnx_path: str = ""
     inference_mode_default: str = "fast"
     inference_device: str = "auto"
     inference_mcts_sims: int = 160
     inference_c_puct: float = 1.5
+    inference_prefer_onnx: bool = True
 
     # Auth/JWT
     auth_jwt_secret: str = ""

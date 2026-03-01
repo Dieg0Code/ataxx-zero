@@ -1,0 +1,82 @@
+name: CI Train
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "train.py"
+      - "train_improved.py"
+      - "src/engine/**"
+      - "src/model/**"
+      - "src/game/**"
+      - "src/data/**"
+      - "scripts/**"
+      - "tests/test_mcts_numerics.py"
+      - "tests/test_training_step_numerics.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pyrefly.toml"
+      - ".github/workflows/ci-train.yml"
+  pull_request:
+    paths:
+      - "train.py"
+      - "train_improved.py"
+      - "src/engine/**"
+      - "src/model/**"
+      - "src/game/**"
+      - "src/data/**"
+      - "scripts/**"
+      - "tests/test_mcts_numerics.py"
+      - "tests/test_training_step_numerics.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pyrefly.toml"
+      - ".github/workflows/ci-train.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-train-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  train-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (dev + train + export)
+        run: uv sync --frozen --group dev --group train --group export
+
+      - name: Compatibility shim for pyrefly interpreter path
+        run: |
+          mkdir -p .venv/Scripts
+          ln -sf ../bin/python .venv/Scripts/python.exe
+
+      - name: Python file length policy
+        run: uv run python scripts/check_python_max_lines.py --max-lines 500 --path train.py --path src --path tests --path scripts
+
+      - name: Ruff (train scope)
+        run: uv run ruff check train.py src/engine src/model src/game src/data tests scripts
+
+      - name: Pyrefly (train scope)
+        run: uv run pyrefly check train.py src tests
+
+      - name: Pytest (train scope)
+        run: uv run pytest -q tests/test_mcts_numerics.py tests/test_training_step_numerics.py

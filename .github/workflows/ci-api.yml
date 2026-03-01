@@ -1,0 +1,96 @@
+name: CI API
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "src/api/**"
+      - "src/inference/**"
+      - "src/game/**"
+      - "src/data/**"
+      - "tests/test_api_*.py"
+      - "tests/test_inference_service.py"
+      - "scripts/**"
+      - "alembic/**"
+      - "alembic.ini"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pyrefly.toml"
+      - ".github/workflows/ci-api.yml"
+  pull_request:
+    paths:
+      - "src/api/**"
+      - "src/inference/**"
+      - "src/game/**"
+      - "src/data/**"
+      - "tests/test_api_*.py"
+      - "tests/test_inference_service.py"
+      - "scripts/**"
+      - "alembic/**"
+      - "alembic.ini"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "pyrefly.toml"
+      - ".github/workflows/ci-api.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (api + dev + train + export)
+        run: uv sync --frozen --group api --group dev --group train --group export
+
+      - name: Compatibility shim for pyrefly interpreter path
+        run: |
+          mkdir -p .venv/Scripts
+          ln -sf ../bin/python .venv/Scripts/python.exe
+
+      - name: Python file length policy
+        run: uv run python scripts/check_python_max_lines.py --max-lines 500 --path src --path tests --path scripts --path train.py
+
+      - name: Ruff (API scope)
+        run: uv run ruff check src tests scripts
+
+      - name: Pyrefly (API scope)
+        run: uv run pyrefly check src tests
+
+      - name: Pytest (API scope)
+        run: uv run pytest -q tests/test_api_* tests/test_inference_service.py
+
+      - name: Alembic heads (single head)
+        run: |
+          HEADS_COUNT="$(uv run alembic heads | wc -l)"
+          echo "Heads: ${HEADS_COUNT}"
+          test "${HEADS_COUNT}" -eq 1
+
+      - name: Alembic SQL render sanity check
+        run: uv run alembic upgrade head --sql > /tmp/alembic_upgrade.sql
+
+      - name: Docker build (production image sanity check)
+        run: docker build -t ataxx-zero:ci .

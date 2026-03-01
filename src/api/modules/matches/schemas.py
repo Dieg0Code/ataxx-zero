@@ -34,6 +34,21 @@ class MatchCreateRequest(BaseModel):
     is_training_eligible: bool = False
 
 
+class MatchInviteCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "opponent_user_id": "f328453e-612b-4dfd-b28a-bd8dd8700dc1",
+                "rated": True,
+            }
+        }
+    )
+
+    opponent_user_id: UUID
+    rated: bool = True
+    season_id: UUID | None = None
+
+
 class MatchMovePayload(BaseModel):
     r1: int = Field(ge=0)
     c1: int = Field(ge=0)

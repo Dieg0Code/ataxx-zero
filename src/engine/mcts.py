@@ -198,7 +198,7 @@ class MCTS:
             action_mask[batch_idx, legal_idx_tensor] = 1.0
 
         amp_ctx = (
-            torch.autocast(device_type="cuda", dtype=torch.float16)
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
             if self.use_amp
             else nullcontext()
         )

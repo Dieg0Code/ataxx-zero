@@ -28,6 +28,8 @@ import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { deleteMyGame, fetchMyGames, type ProfileGame } from "@/features/profile/api";
+import { InvitationList } from "@/features/matches/InvitationList";
+import { useInvitations } from "@/features/matches/useInvitations";
 import {
   fetchActiveSeason,
   fetchRatingEvents,
@@ -36,6 +38,7 @@ import {
 } from "@/features/ranking/api";
 
 const PAGE_SIZE = 8;
+const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
 
 function isSpectatorView(game: ProfileGame, userId: string): boolean {
   const isParticipant = game.player1_id === userId || game.player2_id === userId;
@@ -190,6 +193,19 @@ export function ProfilePage(): JSX.Element {
     queryFn: () => fetchMyGames(accessToken!, PAGE_SIZE, offset, ["finished"]),
     enabled: Boolean(accessToken),
   });
+  const {
+    invitations: invitationItems,
+    isLoading: invitationsLoading,
+    isError: invitationsError,
+    actionLoadingId: invitationActionLoadingId,
+    acceptInvitationById,
+    rejectInvitationById,
+  } = useInvitations({
+    accessToken,
+    enabled: Boolean(accessToken),
+    includeInitialFetch: true,
+    scope: "profile",
+  });
 
   const activeSeasonQuery = useQuery({
     queryKey: ["active-season", accessToken],
@@ -218,7 +234,6 @@ export function ProfilePage(): JSX.Element {
       body.style.overflow = previousOverflow || "";
     };
   }, [pendingDeleteGame]);
-
   const deleteGameMutation = useMutation({
     mutationFn: async (gameId: string) => {
       if (!accessToken) {
@@ -235,6 +250,40 @@ export function ProfilePage(): JSX.Element {
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "No se pudo eliminar la replay.";
       setDeleteError(message);
+      emitFlash(message, "error");
+    },
+  });
+  const acceptInvitationMutation = useMutation({
+    mutationFn: async (gameId: string) => {
+      await acceptInvitationById(gameId);
+      sessionStorage.setItem(
+        MATCHMAKING_MATCH_KEY,
+        JSON.stringify({
+          gameId,
+          matchedWith: "human",
+          createdAt: Date.now(),
+          source: "invite",
+        }),
+      );
+    },
+    onSuccess: () => {
+      emitFlash("Invitacion aceptada. Entrando a la arena...", "success");
+      navigate("/match?queue=1");
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "No se pudo aceptar la invitacion.";
+      emitFlash(message, "error");
+    },
+  });
+  const rejectInvitationMutation = useMutation({
+    mutationFn: async (gameId: string) => {
+      await rejectInvitationById(gameId);
+    },
+    onSuccess: () => {
+      emitFlash("Invitacion rechazada.", "info");
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : "No se pudo rechazar la invitacion.";
       emitFlash(message, "error");
     },
   });
@@ -466,6 +515,23 @@ export function ProfilePage(): JSX.Element {
                 </div>
               </>
             ) : null}
+          </CardContent>
+        </Card>
+        <Card className="border-zinc-800/90 bg-zinc-950/60">
+          <CardHeader>
+            <CardTitle className="text-base">Invitaciones 1v1</CardTitle>
+            <CardDescription>Duelos directos pendientes para tu cuenta.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <InvitationList
+              items={invitationItems}
+              isLoading={invitationsLoading}
+              isError={invitationsError}
+              actionLoadingId={invitationActionLoadingId}
+              variant="card"
+              onAccept={(gameId) => acceptInvitationMutation.mutate(gameId)}
+              onReject={(gameId) => rejectInvitationMutation.mutate(gameId)}
+            />
           </CardContent>
         </Card>
 

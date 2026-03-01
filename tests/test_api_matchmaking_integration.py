@@ -7,6 +7,7 @@ import unittest
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -17,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from api.app import create_app
 from api.db import models as _models
-from api.db.enums import AgentType, BotKind
-from api.db.models import BotProfile, Season, User
+from api.db.enums import AgentType, BotKind, PlayerSide
+from api.db.models import BotProfile, GameMove, Season, User
 from api.db.session import get_session
 
 del _models
@@ -128,6 +129,76 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
         status_payload = status_1.json()
         self.assertEqual(status_payload["status"], "matched")
         self.assertEqual(status_payload["game_id"], join_2.json()["game_id"])
+
+    def test_queue_human_match_finish_updates_ratings(self) -> None:
+        p1 = self._register_and_login("mm-rated-p1", "mm-rated-p1@example.com")
+        p2 = self._register_and_login("mm-rated-p2", "mm-rated-p2@example.com")
+        season_id = self._get_active_season_id()
+
+        join_1 = self.client.post(
+            "/api/v1/matchmaking/queue/join",
+            headers={"Authorization": f"Bearer {p1['access_token']}"},
+        )
+        self.assertEqual(join_1.status_code, 200)
+        self.assertEqual(join_1.json()["status"], "waiting")
+
+        join_2 = self.client.post(
+            "/api/v1/matchmaking/queue/join",
+            headers={"Authorization": f"Bearer {p2['access_token']}"},
+        )
+        self.assertEqual(join_2.status_code, 200)
+        self.assertEqual(join_2.json()["status"], "matched")
+        game_id = join_2.json()["game_id"]
+        self.assertIsNotNone(game_id)
+
+        game_resp = self.client.get(
+            f"/api/v1/matches/{game_id}",
+            headers={"Authorization": f"Bearer {p1['access_token']}"},
+        )
+        self.assertEqual(game_resp.status_code, 200)
+        game_payload = game_resp.json()
+        winner_user_id = game_payload["player1_id"]
+        loser_user_id = game_payload["player2_id"]
+        if game_payload["player1_id"] == p1["user_id"]:
+            mover_token = p1["access_token"]
+        elif game_payload["player1_id"] == p2["user_id"]:
+            mover_token = p2["access_token"]
+        else:
+            self.fail("Matched game player1_id does not belong to queue participants.")
+
+        self._seed_near_terminal_human_match(game_id=game_id)
+        finish_resp = self.client.post(
+            f"/api/v1/matches/{game_id}/moves",
+            json={"pass_turn": False, "move": {"r1": 0, "c1": 0, "r2": 0, "c2": 1}},
+            headers={"Authorization": f"Bearer {mover_token}"},
+        )
+        self.assertEqual(finish_resp.status_code, 201)
+
+        game_resp = self.client.get(
+            f"/api/v1/matches/{game_id}",
+            headers={"Authorization": f"Bearer {p1['access_token']}"},
+        )
+        self.assertEqual(game_resp.status_code, 200)
+        self.assertEqual(game_resp.json()["status"], "finished")
+        self.assertEqual(game_resp.json()["winner_side"], "p1")
+        self.assertTrue(game_resp.json()["rated"])
+
+        p1_rating_resp = self.client.get(f"/api/v1/ranking/ratings/{p1['user_id']}/{season_id}")
+        p2_rating_resp = self.client.get(f"/api/v1/ranking/ratings/{p2['user_id']}/{season_id}")
+        self.assertEqual(p1_rating_resp.status_code, 200)
+        self.assertEqual(p2_rating_resp.status_code, 200)
+        p1_rating = p1_rating_resp.json()
+        p2_rating = p2_rating_resp.json()
+        ratings_by_user = {
+            p1["user_id"]: p1_rating,
+            p2["user_id"]: p2_rating,
+        }
+        winner_rating = ratings_by_user[winner_user_id]
+        loser_rating = ratings_by_user[loser_user_id]
+        self.assertEqual(winner_rating["wins"], 1)
+        self.assertEqual(loser_rating["losses"], 1)
+        self.assertGreater(winner_rating["rating"], 1200.0)
+        self.assertLess(loser_rating["rating"], 1200.0)
 
     def test_queue_uses_eligible_bot_pool_when_alternatives_exist(self) -> None:
         human = self._register_and_login("mm-bot-rotate", "mm-bot-rotate@example.com")
@@ -336,6 +407,48 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
                 for profile in rows.scalars().all():
                     profile.enabled = False
                     session.add(profile)
+                await session.commit()
+
+        asyncio.run(_run())
+
+    def _get_active_season_id(self) -> str:
+        async def _run() -> str:
+            async with self.sessionmaker() as session:
+                stmt = select(Season).where(Season.is_active == True)  # noqa: E712
+                row = await session.execute(stmt)
+                season = row.scalars().first()
+                if season is None:
+                    raise AssertionError("Active season not found")
+                return str(season.id)
+
+        return asyncio.run(_run())
+
+    def _seed_near_terminal_human_match(self, *, game_id: str) -> None:
+        async def _run() -> None:
+            async with self.sessionmaker() as session:
+                seed_grid = [[0 for _ in range(7)] for _ in range(7)]
+                seed_grid[0][0] = 1
+                seed_grid[0][2] = -1
+                seed_state = {
+                    "grid": seed_grid,
+                    "current_player": 1,
+                    "half_moves": 0,
+                }
+                move = GameMove(
+                    game_id=UUID(game_id),
+                    ply=0,
+                    player_side=PlayerSide.P2,
+                    r1=None,
+                    c1=None,
+                    r2=None,
+                    c2=None,
+                    board_before=seed_state,
+                    board_after=seed_state,
+                    mode="seed",
+                    action_idx=0,
+                    value=0.0,
+                )
+                session.add(move)
                 await session.commit()
 
         asyncio.run(_run())

@@ -14,6 +14,14 @@ const fetchPublicPlayersMock = vi.fn();
 const storeInferredMoveMock = vi.fn();
 const storeManualMoveMock = vi.fn();
 const useAuthMock = vi.fn();
+const navigateMock = vi.fn();
+const mockLocation = {
+  pathname: "/match",
+  search: "",
+  hash: "",
+  state: null as unknown,
+  key: "match-0",
+};
 
 vi.mock("@/widgets/layout/AppShell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -43,8 +51,8 @@ vi.mock("react-router-dom", () => ({
       {children}
     </a>
   ),
-  useNavigate: () => vi.fn(),
-  useLocation: () => ({ pathname: "/match", search: "", hash: "", state: null }),
+  useNavigate: () => navigateMock,
+  useLocation: () => mockLocation,
 }));
 
 vi.mock("@/app/providers/useAuth", () => ({
@@ -72,6 +80,12 @@ describe("MatchPage spectator mode", () => {
     fetchPublicPlayersMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
+    navigateMock.mockReset();
+    mockLocation.pathname = "/match";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
+    mockLocation.key = "match-0";
     openPersistedGameSocketMock.mockReturnValue({
       close: vi.fn(),
       onclose: null,
@@ -179,6 +193,12 @@ describe("MatchPage automatic persistence", () => {
     fetchPublicPlayersMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
+    navigateMock.mockReset();
+    mockLocation.pathname = "/match";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
+    mockLocation.key = "match-0";
     openPersistedGameSocketMock.mockReturnValue({
       close: vi.fn(),
       onclose: null,
@@ -338,6 +358,173 @@ describe("MatchPage automatic persistence", () => {
 
     await waitFor(() => {
       expect(deletePersistedGameMock).not.toHaveBeenCalled();
+    });
+  }, 15000);
+});
+
+describe("MatchPage queued human vs human", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    predictAIMoveMock.mockReset();
+    createPersistedGameMock.mockReset();
+    deletePersistedGameMock.mockReset();
+    fetchPersistedGameSummaryMock.mockReset();
+    fetchPersistedReplayMock.mockReset();
+    openPersistedGameSocketMock.mockReset();
+    fetchPublicPlayersMock.mockReset();
+    storeInferredMoveMock.mockReset();
+    storeManualMoveMock.mockReset();
+    navigateMock.mockReset();
+    mockLocation.pathname = "/match";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
+    mockLocation.key = "match-0";
+    openPersistedGameSocketMock.mockReturnValue({
+      close: vi.fn(),
+      onclose: null,
+      onmessage: null,
+    });
+    fetchPersistedGameSummaryMock.mockResolvedValue({
+      id: "game-h2h",
+      queue_type: "custom",
+      status: "in_progress",
+      rated: true,
+      player1_id: "u1",
+      player2_id: "u2",
+      player1_agent: "human",
+      player2_agent: "human",
+    });
+    fetchPublicPlayersMock.mockResolvedValue([
+      {
+        user_id: "u1",
+        is_bot: false,
+        username: "alpha",
+        bot_kind: null,
+        agent_type: null,
+        heuristic_level: null,
+        model_mode: null,
+        enabled: true,
+      },
+      {
+        user_id: "u2",
+        is_bot: false,
+        username: "bravo",
+        bot_kind: null,
+        agent_type: null,
+        heuristic_level: null,
+        model_mode: null,
+        enabled: true,
+      },
+    ]);
+    useAuthMock.mockReturnValue({
+      user: { id: "u2", username: "bravo" },
+      loading: false,
+      isAuthenticated: true,
+      accessToken: "token-h2h",
+      register: vi.fn(),
+      login: vi.fn(),
+      logout: vi.fn(),
+      refreshUser: vi.fn(),
+    });
+  });
+
+  it("does not run local AI on rival human turn for queued 1v1", async () => {
+    sessionStorage.setItem(
+      "ataxx.matchmaking.match.v1",
+      JSON.stringify({
+        gameId: "game-h2h",
+        matchedWith: "human",
+        source: "queue",
+        createdAt: Date.now(),
+      }),
+    );
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/humano vs humano/i)).toBeInTheDocument();
+    });
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 4200);
+    });
+
+    expect(predictAIMoveMock).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("returns both players to lobby when rival closes the game", async () => {
+    sessionStorage.setItem(
+      "ataxx.matchmaking.match.v1",
+      JSON.stringify({
+        gameId: "game-h2h",
+        matchedWith: "human",
+        source: "queue",
+        createdAt: Date.now(),
+      }),
+    );
+
+    let wsEventHandler: ((event: import("@/features/match/persistence").PersistedGameWsEvent) => void) | null = null;
+    openPersistedGameSocketMock.mockImplementation(
+      (_token: string, _gameId: string, onEvent: (event: import("@/features/match/persistence").PersistedGameWsEvent) => void) => {
+        wsEventHandler = onEvent;
+        return {
+          close: vi.fn(),
+          onclose: null,
+          onmessage: null,
+        };
+      },
+    );
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/humano vs humano/i)).toBeInTheDocument();
+    });
+    expect(wsEventHandler).not.toBeNull();
+
+    wsEventHandler?.({
+      type: "game.closed",
+      game_id: "game-h2h",
+      reason: "deleted_by_participant",
+    });
+
+    await waitFor(() => {
+      expect(navigateMock).toHaveBeenCalledWith(
+        "/",
+        expect.objectContaining({
+          state: expect.objectContaining({
+            flash: expect.objectContaining({
+              tone: "warning",
+            }),
+          }),
+        }),
+      );
+    });
+  }, 15000);
+
+  it("consumes accepted invitation while already on /match using location key change", async () => {
+    const view = render(<MatchPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Arena Ataxx")).toBeInTheDocument();
+    });
+
+    sessionStorage.setItem(
+      "ataxx.matchmaking.match.v1",
+      JSON.stringify({
+        gameId: "game-h2h-next",
+        matchedWith: "human",
+        source: "invite",
+        createdAt: Date.now(),
+      }),
+    );
+    mockLocation.search = "?queue=1";
+    mockLocation.key = "match-1";
+    view.rerender(<MatchPage />);
+
+    await waitFor(() => {
+      expect(fetchPersistedGameSummaryMock).toHaveBeenCalledWith("token-h2h", "game-h2h-next");
     });
   }, 15000);
 });

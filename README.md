@@ -1,5 +1,24 @@
 # Ataxx Zero
 
+## Web E2E (Playwright)
+
+Desde `web/`:
+
+```bash
+npm run test:e2e
+```
+
+Opciones utiles:
+
+- `npm run test:e2e:headed` para ver el navegador.
+- `npm run test:e2e:ui` para usar la UI de Playwright.
+
+Notas:
+
+- El runner levanta `vite` automaticamente en `http://127.0.0.1:5173`.
+- Reporte HTML: `web/playwright-report/`.
+- Artefactos de fallos (screenshots/videos/traces): `web/test-results/`.
+
 ## Pygame (play / spectate)
 
 Base:
@@ -38,6 +57,54 @@ uv run python train.py
 ```
 
 `train_improved.py` is kept as compatibility wrapper.
+
+## Entrenamiento remoto (RunPod + Pulumi)
+
+Para evitar ejecutar un GitHub Action durante dias, el flujo esta separado en dos workflows:
+
+- `train-runpod-start.yml`: crea/inicia el pod de entrenamiento y termina rapido.
+- `train-runpod-reconcile.yml`: revisa estado del pod (manual o por cron) y lo destruye cuando termina.
+
+Secrets requeridos en GitHub:
+
+- `RUNPOD_API_TOKEN`
+- `HF_TOKEN`
+- `PULUMI_ACCESS_TOKEN`
+
+Variable recomendada en GitHub (`Repository variables`):
+
+- `RUNPOD_TRAIN_STACK` (ejemplo: `dieg0code/train`)
+
+Iniciar entrenamiento:
+
+```bash
+gh workflow run train-runpod-start.yml \
+  --ref main \
+  -f stack=dieg0code/train \
+  -f pod_name=ataxx-zero-train \
+  -f gpu_type_id="NVIDIA GeForce RTX 4090" \
+  -f cloud_type=SECURE \
+  -f image_name="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04" \
+  -f repository=dieg0code/ataxx-zero \
+  -f git_ref=main \
+  -f hf_repo_id=dieg0code/ataxx-zero \
+  -f hf_run_id=policy_spatial_v1 \
+  -f train_args="--no-onnx --quiet --devices 1 --strategy auto --num-workers 4 --keep-local-ckpts 2 --keep-log-versions 1 --hf --iterations 40 --episodes 70 --sims 600 --epochs 5 --batch-size 512 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.45 --opp-heuristic 0.50 --opp-random 0.05 --opp-heu-easy 0.00 --opp-heu-normal 0.25 --opp-heu-hard 0.75 --model-swap-prob 0.5 --selfplay-workers 8 --monitor-log-every 3"
+```
+
+Reconciliar manualmente (si quieres forzar chequeo/destruccion):
+
+```bash
+gh workflow run train-runpod-reconcile.yml \
+  --ref main \
+  -f stack=dieg0code/train
+```
+
+Notas operativas:
+
+- El pod sigue entrenando en RunPod aunque el Action termine.
+- El workflow de reconcile destruye pods en estado terminal para cortar cobro.
+- Checkpoints HF se separan por `--hf-run-id` para no mezclar lineas de modelo.
 
 ## Dependency Profiles (uv)
 
@@ -365,6 +432,60 @@ Build production assets:
 npm run build
 ```
 
+## Deploy app en Railway (automatico, sin UI diaria)
+
+Este repo despliega la app como **servicio unico** (FastAPI + frontend estatico) usando el
+`Dockerfile` de la raiz y GitHub Actions con Railway CLI.
+
+Workflow:
+
+- `.github/workflows/deploy-railway-app.yml`
+
+Se dispara automaticamente en push a `main/master` cuando cambian:
+
+- `src/**`
+- `web/**`
+- `Dockerfile`
+- `pyproject.toml`
+- `uv.lock`
+- `alembic/**`
+- `alembic.ini`
+
+Secrets requeridos en GitHub:
+
+- `RAILWAY_TOKEN`
+- `RAILWAY_PROJECT_ID`
+- `RAILWAY_ENVIRONMENT_ID`
+- `RAILWAY_SERVICE_ID`
+
+Comando usado por el workflow:
+
+```bash
+railway up --ci --project $RAILWAY_PROJECT_ID --environment $RAILWAY_ENVIRONMENT_ID --service $RAILWAY_SERVICE_ID
+```
+
+### Setup inicial (una sola vez)
+
+Puedes hacerlo sin buscar menus en UI:
+
+1. Crea proyecto/servicio una vez en Railway (si aun no existe).
+2. Saca IDs por CLI local:
+
+```bash
+railway login
+railway link
+railway status
+```
+
+3. Guarda `RAILWAY_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`,
+   `RAILWAY_SERVICE_ID` en GitHub Secrets.
+
+Notas:
+
+- `.railwayignore` reduce el contexto que se sube en deploy.
+- El contenedor final sirve API y frontend estatico en el mismo dominio.
+- Pulumi se mantiene para infraestructura de entrenamiento en RunPod.
+
 Design direction:
 
 - Brand: `underbyteLabs - ataxx-zero`
@@ -405,6 +526,12 @@ docker build -t ataxx-api:with-model --target runtime-with-model .
 ```
 
 Then run without checkpoint volume (or keep it mounted).
+
+Optional: bake ONNX into image:
+
+```bash
+docker build -t ataxx-api:with-onnx --target runtime-with-onnx .
+```
 
 Health check:
 
@@ -706,3 +833,43 @@ Ingest samples from a finished game:
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/v1/training/samples/ingest-game/<GAME_ID>?split=train&source=self_play&overwrite=true"
 ```
+
+## ONNX Model Flow (export + parity + runtime)
+
+Install ONNX tooling:
+
+```bash
+uv sync --group api --group export --group dev
+```
+
+Export final checkpoint to ONNX:
+
+```bash
+uv run python scripts/export_model_onnx.py \
+  --checkpoint checkpoints/last.ckpt \
+  --output checkpoints/last.onnx
+```
+
+Validate torch vs ONNX parity:
+
+```bash
+uv run python scripts/check_onnx_parity.py \
+  --checkpoint checkpoints/last.ckpt \
+  --onnx checkpoints/last.onnx \
+  --samples 32 \
+  --policy-tol 2e-3 \
+  --value-tol 2e-3
+```
+
+Enable ONNX-first inference in API (`.env`):
+
+```dotenv
+MODEL_CHECKPOINT_PATH="checkpoints/last.ckpt"  # fallback + strong mode (MCTS)
+MODEL_ONNX_PATH="checkpoints/last.onnx"        # fast mode preferred backend
+INFERENCE_PREFER_ONNX=true
+```
+
+Runtime behavior:
+
+- `fast` mode: uses ONNX first; falls back to torch checkpoint if ONNX fails.
+- `strong` mode: uses torch+MCTS; if torch checkpoint is unavailable, it degrades to `fast`.

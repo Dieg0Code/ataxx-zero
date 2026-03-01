@@ -9,7 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.board import AtaxxBoard
-from game.constants import BOARD_SIZE, EMPTY, PLAYER_1, PLAYER_2
+from game.constants import BOARD_SIZE, DRAW, EMPTY, PLAYER_1, PLAYER_2
 
 
 class TestBoardRules(unittest.TestCase):
@@ -44,10 +44,10 @@ class TestBoardRules(unittest.TestCase):
         board.step((3, 3, 3, 4))
         self.assertEqual(int(board.grid[4, 4]), PLAYER_1)
 
-    def test_observation_has_three_channels_without_nans(self) -> None:
+    def test_observation_has_four_channels_without_nans(self) -> None:
         board = AtaxxBoard()
         obs = board.get_observation()
-        self.assertEqual(obs.shape, (3, BOARD_SIZE, BOARD_SIZE))
+        self.assertEqual(obs.shape, (4, BOARD_SIZE, BOARD_SIZE))
         self.assertFalse(np.isnan(obs).any())
         self.assertTrue((obs >= 0).all())
         self.assertTrue((obs <= 1).all())
@@ -113,6 +113,36 @@ class TestBoardRules(unittest.TestCase):
             self.assertEqual(board.p1_count, int(np.sum(board.grid == PLAYER_1)))
             self.assertEqual(board.p2_count, int(np.sum(board.grid == PLAYER_2)))
             self.assertEqual(board.empty_count, int(np.sum(board.grid == EMPTY)))
+
+    def test_threefold_repetition_declares_draw(self) -> None:
+        board = AtaxxBoard()
+        cycle = [
+            (0, 0, 0, 2),
+            (0, BOARD_SIZE - 1, 0, BOARD_SIZE - 3),
+            (0, 2, 0, 0),
+            (0, BOARD_SIZE - 3, 0, BOARD_SIZE - 1),
+        ]
+        for _ in range(2):
+            for move in cycle:
+                board.step(move)
+        self.assertTrue(board.is_game_over())
+        self.assertEqual(board.get_result(), DRAW)
+
+    def test_threefold_repetition_draw_overrides_piece_count_advantage(self) -> None:
+        board = AtaxxBoard()
+        board.grid[:] = EMPTY
+        board.grid[0, 0] = PLAYER_1
+        board.grid[0, 1] = PLAYER_1
+        board.grid[0, 2] = PLAYER_1
+        board.grid[BOARD_SIZE - 1, BOARD_SIZE - 1] = PLAYER_2
+        board.p1_count = 3
+        board.p2_count = 1
+        board.empty_count = BOARD_SIZE * BOARD_SIZE - 4
+        board.current_player = PLAYER_1
+        board._position_counts[board._position_key()] = 3
+
+        self.assertTrue(board.is_game_over())
+        self.assertEqual(board.get_result(), DRAW)
 
 
 if __name__ == "__main__":

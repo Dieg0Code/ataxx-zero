@@ -763,3 +763,11 @@ async def delete_game(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Game cannot be deleted due to related records: {exc.orig}",
         ) from exc
+    await gameplay_ws_hub.broadcast(
+        game_id=game_id,
+        payload={
+            "type": "game.closed",
+            "game_id": str(game_id),
+            "reason": "deleted_by_participant",
+        },
+    )

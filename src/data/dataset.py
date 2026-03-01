@@ -106,15 +106,17 @@ class AtaxxDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
         buffer: ReplayBuffer,
         augment: bool = True,
         reference_buffer: bool = False,
+        val_split: float = 0.1,
     ) -> None:
         self.augment = augment
         self.examples: list[tuple[np.ndarray, np.ndarray, float]] | deque[
             tuple[np.ndarray, np.ndarray, float]
         ]
-        if reference_buffer:
-            self.examples = buffer.buffer
-        else:
-            self.examples = buffer.get_all()
+        raw_examples = list(buffer.buffer) if reference_buffer else buffer.get_all()
+        n_val = int(len(raw_examples) * val_split)
+        n_train = len(raw_examples) - n_val
+        # Keep train/validation disjoint so val loss is a true hold-out metric.
+        self.examples = raw_examples[:n_train]
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -141,7 +143,8 @@ class ValidationDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     def __init__(self, buffer: ReplayBuffer, split: float = 0.1) -> None:
         all_examples = buffer.get_all()
         n_val = int(len(all_examples) * split)
-        self.examples = all_examples[-n_val:] if n_val > 0 else []
+        n_train = len(all_examples) - n_val
+        self.examples = all_examples[n_train:] if n_val > 0 else []
 
     def __len__(self) -> int:
         return len(self.examples)

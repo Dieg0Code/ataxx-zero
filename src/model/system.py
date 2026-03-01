@@ -19,6 +19,7 @@ class AtaxxZero(pl.LightningModule):
         self,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
+        value_loss_coeff: float = 0.5,
         d_model: int = 128,
         nhead: int = 8,
         num_layers: int = 6,
@@ -36,6 +37,7 @@ class AtaxxZero(pl.LightningModule):
         self.save_hyperparameters()
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.value_loss_coeff = value_loss_coeff
         self.scheduler_type = scheduler_type
         self.lr_gamma = lr_gamma
         self.milestones = milestones
@@ -48,7 +50,7 @@ class AtaxxZero(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.example_input_array = torch.zeros(1, 3, 7, 7)
+        self.example_input_array = torch.zeros(1, 4, 7, 7)
 
     def forward(
         self,
@@ -99,12 +101,18 @@ class AtaxxZero(pl.LightningModule):
         batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
         boards, target_pis, target_vs = batch
-        pi_logits, v_pred = self(boards)
+        legal_mask = (target_pis > 0).to(dtype=boards.dtype)
+        has_legal_support = torch.sum(legal_mask, dim=1, keepdim=True) > 0
+        if not bool(torch.all(has_legal_support).item()):
+            # Defensive fallback: keep logits finite even if a malformed target row is all zeros.
+            legal_mask = torch.where(has_legal_support, legal_mask, torch.ones_like(legal_mask))
+
+        pi_logits, v_pred = self(boards, action_mask=legal_mask)
 
         loss_v = functional.mse_loss(v_pred.view(-1), target_vs.view(-1))
         log_probs = functional.log_softmax(pi_logits, dim=1)
         loss_pi = -torch.sum(target_pis * log_probs) / target_pis.size(0)
-        loss = loss_v + loss_pi
+        loss = loss_pi + (self.value_loss_coeff * loss_v)
 
         with torch.no_grad():
             pred_actions = torch.argmax(pi_logits, dim=1)

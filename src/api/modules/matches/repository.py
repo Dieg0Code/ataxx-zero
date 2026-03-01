@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
+from api.db.enums import AgentType, GameStatus, QueueType
 from api.db.models import BotProfile, Game, GameMove, User
 
 
@@ -55,3 +57,41 @@ class MatchesRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def count_incoming_invitations(self, user_id: UUID) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(Game)
+            .where(
+                Game.player2_id == user_id,
+                Game.status == GameStatus.PENDING,
+                Game.queue_type == QueueType.CUSTOM,
+                Game.player1_agent == AgentType.HUMAN,
+                Game.player2_agent == AgentType.HUMAN,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one())
+
+    async def list_incoming_invitations(
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+        offset: int,
+    ) -> list[Game]:
+        stmt = (
+            select(Game)
+            .where(
+                Game.player2_id == user_id,
+                Game.status == GameStatus.PENDING,
+                Game.queue_type == QueueType.CUSTOM,
+                Game.player1_agent == AgentType.HUMAN,
+                Game.player2_agent == AgentType.HUMAN,
+            )
+            .order_by(desc(Game.created_at))
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())

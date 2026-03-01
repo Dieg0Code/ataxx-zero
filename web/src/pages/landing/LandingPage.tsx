@@ -45,6 +45,7 @@ type QueueMatch = {
   gameId: string;
   matchedWith: MatchedWith;
   createdAt: number;
+  source: "queue";
 };
 type QueuePhase = "idle" | "searching" | "confirming" | "loading";
 
@@ -67,6 +68,7 @@ function saveMatchedGame(gameId: string, matchedWith: MatchedWith): void {
     gameId,
     matchedWith,
     createdAt: Date.now(),
+    source: "queue",
   };
   sessionStorage.setItem(MATCHMAKING_MATCH_KEY, JSON.stringify(payload));
 }
@@ -165,6 +167,7 @@ export function LandingPage(): JSX.Element {
         : "border-primary/70 border-t-primary";
   const queueGlowClass =
     queuePhase === "loading" ? "shadow-[0_0_16px_rgba(163,230,53,0.45)]" : "shadow-[0_0_8px_rgba(163,230,53,0.18)]";
+  const acceptProgress = Math.max(0, Math.min(1, acceptCountdown / 12));
 
   const emitFlash = useCallback(
     (message: string, tone: "success" | "warning" | "error" | "info"): void => {
@@ -186,7 +189,11 @@ export function LandingPage(): JSX.Element {
     return () => window.clearInterval(interval);
   }, [queueActive]);
 
-  const openMatchAccept = (gameId: string, matchedWith: MatchedWith): void => {
+  const openMatchAccept = (
+    gameId: string,
+    matchedWith: MatchedWith,
+    source: "queue" = "queue",
+  ): void => {
     playSfx(QUEUE_SFX.found, 0.24);
     setQueueActive(false);
     setQueueSeconds(0);
@@ -197,6 +204,7 @@ export function LandingPage(): JSX.Element {
       gameId,
       matchedWith,
       createdAt: Date.now(),
+      source,
     });
     setPendingOpponentName(null);
   };
@@ -474,18 +482,34 @@ export function LandingPage(): JSX.Element {
       <AnimatePresence>
         {pendingMatch !== null ? (
           <motion.div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 px-4 backdrop-blur-[2px]"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="relative w-full max-w-md rounded-xl border border-lime-300/45 bg-zinc-950/95 p-5 shadow-[0_0_40px_rgba(163,230,53,0.2)]"
+              className="relative w-full max-w-md overflow-hidden rounded-xl border border-lime-300/45 bg-zinc-950/95 p-5 shadow-[0_0_44px_rgba(163,230,53,0.22)]"
               initial={{ opacity: 0, y: 12, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 8, scale: 0.98 }}
               transition={{ duration: 0.2, ease: "easeOut" }}
             >
+              <motion.div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 opacity-40"
+                style={{
+                  background:
+                    "linear-gradient(120deg, rgba(163,230,53,0.08) 0%, rgba(163,230,53,0.02) 28%, transparent 52%)",
+                }}
+                animate={{ opacity: [0.3, 0.5, 0.3] }}
+                transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+              />
+              <motion.div
+                aria-hidden="true"
+                className="pointer-events-none absolute left-0 right-0 top-0 h-px bg-lime-300/80"
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+              />
               <button
                 type="button"
                 aria-label="Cerrar modal"
@@ -499,12 +523,22 @@ export function LandingPage(): JSX.Element {
               </button>
               <p className="text-xs uppercase tracking-[0.14em] text-lime-300">Partida encontrada</p>
               <h3 className="mt-2 text-xl font-semibold text-zinc-100">Aceptar enfrentamiento</h3>
-              <p className="mt-2 text-sm text-zinc-300">
+              <p className="mt-1 text-xs uppercase tracking-[0.12em] text-zinc-500">
+                Emparejamiento de cola
+              </p>
+              <p className="mt-3 text-sm text-zinc-300">
                 Rival: <span className="font-semibold text-zinc-100">{pendingOpponentName ?? "sincronizando..."}</span>
               </p>
               <p className="mt-1 text-sm text-zinc-400">
                 Tiempo restante: <span className="font-semibold text-lime-300">{acceptCountdown}s</span>
               </p>
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full border border-lime-300/35 bg-zinc-900/90">
+                <motion.div
+                  className="h-full bg-[linear-gradient(90deg,rgba(163,230,53,0.55),rgba(190,242,100,0.95))]"
+                  animate={{ width: `${Math.round(acceptProgress * 100)}%` }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                />
+              </div>
               <div className="mt-4 grid grid-cols-1 gap-2">
                 <Button
                   type="button"

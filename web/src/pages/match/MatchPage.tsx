@@ -37,6 +37,7 @@ import {
   type PersistedMoveMode,
   type PersistedReplay,
 } from "@/features/match/persistence";
+import { createHumanInvitation, fetchInvitationGame } from "@/features/matches/api";
 import {
   PLAYER_1,
   PLAYER_2,
@@ -96,6 +97,7 @@ type InfectionMask = Record<string, { oldCell: Cell; revealAt: number }>;
 type HeuristicLevel = "easy" | "normal" | "hard";
 type InfectionBurst = { key: string; until: number };
 type MatchMode = "play" | "spectate";
+type ControllerKind = "human" | "remote_human" | "model" | "heuristic";
 type PendingPersistOperation = {
   gameId: string;
   beforeBoard: BoardState;
@@ -116,6 +118,12 @@ type MatchmakingMatch = {
   gameId?: string;
   matchedWith?: "human" | "bot";
   createdAt?: number;
+};
+type OutgoingInvitation = {
+  gameId: string;
+  opponentUserId: string;
+  opponentUsername: string;
+  rated: boolean;
 };
 type RatingBaseline = {
   seasonId: string;
@@ -353,6 +361,12 @@ export function MatchPage(): JSX.Element {
   const [queueArenaP1Elo, setQueueArenaP1Elo] = useState<number | null>(null);
   const [queueArenaP2Elo, setQueueArenaP2Elo] = useState<number | null>(null);
   const [queueArenaLoading, setQueueArenaLoading] = useState(false);
+  const [localPlayerSide, setLocalPlayerSide] = useState<1 | -1>(PLAYER_1);
+  const [queuePlayerAgents, setQueuePlayerAgents] = useState<{
+    p1: "human" | "model" | "heuristic";
+    p2: "human" | "model" | "heuristic";
+  } | null>(null);
+  const [outgoingInvitation, setOutgoingInvitation] = useState<OutgoingInvitation | null>(null);
   const [ratingBaseline, setRatingBaseline] = useState<RatingBaseline | null>(null);
   const [publicPlayers, setPublicPlayers] = useState<PublicPlayer[]>([]);
   const [botAccounts, setBotAccounts] = useState<PlayableBot[]>([]);
@@ -423,13 +437,20 @@ export function MatchPage(): JSX.Element {
   const hasBlockingRemoteMatch = matchStarted && !gameFinished && persistedGameId !== null && !exitingMatch;
 
   const sideController = useCallback(
-    (side: 1 | -1): OpponentProfile | "human" => {
+    (side: 1 | -1): ControllerKind => {
       if (isSpectate) {
         return side === PLAYER_1 ? p1Profile : opponentProfile;
       }
+      if (queuedGameId !== null && queuePlayerAgents !== null) {
+        if (side === localPlayerSide) {
+          return "human";
+        }
+        const remoteAgent = side === PLAYER_1 ? queuePlayerAgents.p1 : queuePlayerAgents.p2;
+        return remoteAgent === "human" ? "remote_human" : remoteAgent;
+      }
       return side === HUMAN_PLAYER ? "human" : opponentProfile;
     },
-    [isSpectate, opponentProfile, p1Profile],
+    [isSpectate, localPlayerSide, opponentProfile, p1Profile, queuePlayerAgents, queuedGameId],
   );
 
   const sideMoveMode = useCallback(
@@ -447,12 +468,36 @@ export function MatchPage(): JSX.Element {
     },
     [heuristicLevel, mode, opponentProfile, p1HeuristicLevel, p1ModelMode, p1Profile],
   );
-  const p1SummaryLabel = isSpectate ? `P1 (${sideController(PLAYER_1)})` : "Humano";
-  const p2SummaryLabel = isSpectate ? `P2 (${sideController(PLAYER_2)})` : `IA (${opponentProfile})`;
+  const p1SummaryLabel = isSpectate
+    ? `P1 (${sideController(PLAYER_1)})`
+    : sideController(PLAYER_1) === "human"
+      ? "Humano"
+      : sideController(PLAYER_1) === "remote_human"
+        ? "Rival"
+        : `IA (${sideController(PLAYER_1)})`;
+  const p2SummaryLabel = isSpectate
+    ? `P2 (${sideController(PLAYER_2)})`
+    : sideController(PLAYER_2) === "human"
+      ? "Humano"
+      : sideController(PLAYER_2) === "remote_human"
+        ? "Rival"
+        : `IA (${sideController(PLAYER_2)})`;
   const currentTurnController = sideController(board.current_player);
   const currentTurnLabel = useMemo(() => {
     if (board.current_player === PLAYER_1) {
-      return currentTurnController === "human" ? "Equipo humano" : `IA P1 (${currentTurnController})`;
+      if (currentTurnController === "human") {
+        return "Tu turno (P1)";
+      }
+      if (currentTurnController === "remote_human") {
+        return "Turno rival (P1)";
+      }
+      return `IA P1 (${currentTurnController})`;
+    }
+    if (currentTurnController === "human") {
+      return "Tu turno (P2)";
+    }
+    if (currentTurnController === "remote_human") {
+      return "Turno rival (P2)";
     }
     return `IA P2 (${currentTurnController})`;
   }, [board.current_player, currentTurnController]);
@@ -473,14 +518,28 @@ export function MatchPage(): JSX.Element {
   const controlDeltaLabel = `${controlDelta >= 0 ? "+" : ""}${controlDelta}`;
   const matchTypeLabel = queueRanked ? "Ranked" : "Casual";
   const isQueueMatchView = queuedGameId !== null || guestQueueMode;
-  const modeLabel = matchMode === "spectate" ? "Simulacion" : "Humano vs IA";
+  const isHumanVsHumanMatch =
+    !isSpectate &&
+    queuedGameId !== null &&
+    queuePlayerAgents?.p1 === "human" &&
+    queuePlayerAgents?.p2 === "human";
+  const modeLabel = matchMode === "spectate" ? "Simulacion" : isHumanVsHumanMatch ? "Humano vs humano" : "Humano vs IA";
   const playerDisplayName = user?.username ?? guestUsername ?? "guest";
   const selectedP1Player = publicPlayers.find((player) => player.user_id === selectedP1BotId) ?? null;
   const selectedP2Player = publicPlayers.find((player) => player.user_id === selectedP2BotId) ?? null;
   const selectedP1Bot = botAccounts.find((bot) => bot.user_id === selectedP1BotId) ?? null;
   const selectedP2Bot = botAccounts.find((bot) => bot.user_id === selectedP2BotId) ?? null;
-  const p1DisplayName = isSpectate ? selectedP1Player?.username ?? "p1" : `@${playerDisplayName}`;
-  const p2DisplayName = selectedP2Player?.username ?? guestRivalName ?? "p2";
+  const rivalName = selectedP2Player?.username ?? guestRivalName ?? "rival";
+  const p1DisplayName = isSpectate
+    ? selectedP1Player?.username ?? "p1"
+    : localPlayerSide === PLAYER_1
+      ? `@${playerDisplayName}`
+      : rivalName;
+  const p2DisplayName = isSpectate
+    ? selectedP2Player?.username ?? "p2"
+    : localPlayerSide === PLAYER_2
+      ? `@${playerDisplayName}`
+      : rivalName;
   const playerLabel = isSpectate
     ? `P1 | ${selectedP1Player?.username ?? "jugador"}`
     : `@${playerDisplayName}`;
@@ -555,6 +614,12 @@ export function MatchPage(): JSX.Element {
     }
     return publicPlayers.filter((player) => player.username.toLowerCase().includes(query));
   }, [rivalPickerQuery, publicPlayers]);
+  const selectablePlayers = useMemo(() => {
+    if (rivalPickerTarget !== "p2" || isSpectate || user?.id === undefined) {
+      return filteredPlayers;
+    }
+    return filteredPlayers.filter((player) => player.user_id !== user.id);
+  }, [filteredPlayers, isSpectate, rivalPickerTarget, user?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -817,27 +882,6 @@ export function MatchPage(): JSX.Element {
 
   useEffect(() => {
     try {
-      const rawMatch = sessionStorage.getItem(MATCHMAKING_MATCH_KEY);
-      if (rawMatch !== null) {
-        sessionStorage.removeItem(MATCHMAKING_MATCH_KEY);
-        const payload = JSON.parse(rawMatch) as MatchmakingMatch;
-        if (typeof payload.gameId === "string" && payload.gameId.length > 0) {
-          setQueuedGameId(payload.gameId);
-          setQueueRanked(true);
-          setQueueNotice(
-            payload.matchedWith === "human"
-              ? "Rival en cola encontrado. Preparando tablero..."
-              : "Rival bot encontrado. Preparando tablero...",
-          );
-          setAutoQueueStart(true);
-          return;
-        }
-      }
-    } catch {
-      sessionStorage.removeItem(MATCHMAKING_MATCH_KEY);
-    }
-
-    try {
       const raw = sessionStorage.getItem(MATCHMAKING_PRESET_KEY);
       if (raw === null) {
         return;
@@ -879,62 +923,6 @@ export function MatchPage(): JSX.Element {
       sessionStorage.removeItem(MATCHMAKING_PRESET_KEY);
     }
   }, []);
-
-  useEffect(() => {
-    if (!isAuthenticated || accessToken === null || persistedGameId === null) {
-      gameplayWsRef.current?.close();
-      gameplayWsRef.current = null;
-      lastWsPlyRef.current = -1;
-      return;
-    }
-
-    const onEvent = (event: PersistedGameWsEvent): void => {
-      if (event.type !== "game.move.applied") {
-        return;
-      }
-      if (event.game_id !== persistedGameId) {
-        return;
-      }
-      if (event.move.ply <= lastWsPlyRef.current) {
-        return;
-      }
-      lastWsPlyRef.current = event.move.ply;
-
-      if (event.move.board_after !== null) {
-        const boardAfter = event.move.board_after as BoardState;
-        setBoard(boardAfter);
-      }
-      setResolvedMoves((prev) => Math.max(prev, event.move.ply + 1));
-      setLastResolvedMove(
-        event.move.r1 === null || event.move.c1 === null || event.move.r2 === null || event.move.c2 === null
-          ? null
-          : { r1: event.move.r1, c1: event.move.c1, r2: event.move.r2, c2: event.move.c2 },
-      );
-
-      if (event.game.status === "finished") {
-        setMatchEndMs(Date.now());
-        setStatus("Partida finalizada.");
-      } else {
-        setStatus(`Sincronizado en vivo: jugada ${event.move.ply + 1}.`);
-      }
-    };
-
-    const socket = openPersistedGameSocket(accessToken, persistedGameId, onEvent);
-    gameplayWsRef.current = socket;
-
-    socket.onclose = () => {
-      if (gameplayWsRef.current === socket) {
-        gameplayWsRef.current = null;
-      }
-    };
-
-    return () => {
-      if (gameplayWsRef.current === socket) {
-        gameplayWsRef.current = null;
-      }
-      socket.close();
-    };
-  }, [accessToken, isAuthenticated, persistedGameId]);
 
   useEffect(() => {
     try {
@@ -1020,6 +1008,14 @@ export function MatchPage(): JSX.Element {
   }, [accessToken, isAuthenticated]);
 
   useEffect(() => {
+    if (isSpectate || user?.id === undefined || selectedP2BotId !== user.id) {
+      return;
+    }
+    const firstNonSelf = publicPlayers.find((player) => player.user_id !== user.id);
+    setSelectedP2BotId(firstNonSelf?.user_id ?? "");
+  }, [isSpectate, publicPlayers, selectedP2BotId, user?.id]);
+
+  useEffect(() => {
     if (!isAuthenticated || accessToken === null || queuedGameId === null) {
       return;
     }
@@ -1030,11 +1026,32 @@ export function MatchPage(): JSX.Element {
         if (cancelled) {
           return;
         }
-        if (game.player2_id !== null) {
-          setSelectedP2BotId(game.player2_id);
+        const isLocalP1 = user?.id !== undefined && game.player1_id === user.id;
+        const isLocalP2 = user?.id !== undefined && game.player2_id === user.id;
+
+        if (isLocalP1) {
+          setLocalPlayerSide(PLAYER_1);
+        } else if (isLocalP2) {
+          setLocalPlayerSide(PLAYER_2);
+        } else {
+          setLocalPlayerSide(PLAYER_1);
         }
-        if (game.player2_agent === "model" || game.player2_agent === "heuristic") {
-          setOpponentProfile(game.player2_agent);
+
+        setQueuePlayerAgents({
+          p1: game.player1_agent,
+          p2: game.player2_agent,
+        });
+
+        const opponentId =
+          isLocalP1 ? game.player2_id : isLocalP2 ? game.player1_id : game.player2_id;
+        if (opponentId !== null) {
+          setSelectedP2BotId(opponentId);
+        }
+
+        const opponentAgent =
+          isLocalP1 ? game.player2_agent : isLocalP2 ? game.player1_agent : game.player2_agent;
+        if (opponentAgent === "model" || opponentAgent === "heuristic") {
+          setOpponentProfile(opponentAgent);
         }
       } catch {
         // Best effort sync from persisted game metadata.
@@ -1043,7 +1060,46 @@ export function MatchPage(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, isAuthenticated, queuedGameId]);
+  }, [accessToken, isAuthenticated, queuedGameId, user?.id]);
+
+  useEffect(() => {
+    if (!isAuthenticated || accessToken === null || outgoingInvitation === null) {
+      return;
+    }
+    let cancelled = false;
+    const intervalId = window.setInterval(() => {
+      void (async () => {
+        try {
+          const invitation = await fetchInvitationGame(accessToken, outgoingInvitation.gameId);
+          if (cancelled) {
+            return;
+          }
+          if (invitation.status === "in_progress") {
+            setOutgoingInvitation(null);
+            setQueuedGameId(invitation.id);
+            setQueueRanked(Boolean(invitation.rated));
+            setQueueNotice(`${outgoingInvitation.opponentUsername} acepto la invitacion. Entrando a la arena...`);
+            setAutoQueueStart(true);
+            emitFlash("Invitacion aceptada. Iniciando partida 1v1.", "success");
+            return;
+          }
+          if (invitation.status === "aborted") {
+            setOutgoingInvitation(null);
+            setQueueNotice(`${outgoingInvitation.opponentUsername} rechazo la invitacion.`);
+            emitFlash("La invitacion fue rechazada.", "warning");
+            return;
+          }
+          setStatus(`Solicitud enviada a ${outgoingInvitation.opponentUsername}. Espera su respuesta...`);
+        } catch {
+          // Keep polling; temporary network errors should not close invitation flow.
+        }
+      })();
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, emitFlash, isAuthenticated, outgoingInvitation]);
 
   useEffect(() => {
     if (!isQueueMatchView || !isAuthenticated || accessToken === null || user?.id === undefined) {
@@ -1209,9 +1265,12 @@ export function MatchPage(): JSX.Element {
     setMatchEndMs(null);
     setResolvedMoves(0);
     setQueueNotice(null);
+    setOutgoingInvitation(null);
     setAutoQueueStart(false);
     setQueueRanked(false);
     setQueuedGameId(null);
+    setQueuePlayerAgents(null);
+    setLocalPlayerSide(PLAYER_1);
     setGuestQueueMode(false);
     setGuestRivalName(null);
     setQueueRedirecting(false);
@@ -1223,6 +1282,121 @@ export function MatchPage(): JSX.Element {
     setAnimatedLpDelta(null);
     setAnimatedRatingDelta(null);
   }, [clearPendingQueue]);
+
+  const consumeQueuedMatchFromSession = useCallback(async (): Promise<void> => {
+    try {
+      const rawMatch = sessionStorage.getItem(MATCHMAKING_MATCH_KEY);
+      if (rawMatch === null) {
+        return;
+      }
+      sessionStorage.removeItem(MATCHMAKING_MATCH_KEY);
+      const payload = JSON.parse(rawMatch) as MatchmakingMatch;
+      if (typeof payload.gameId !== "string" || payload.gameId.length === 0) {
+        return;
+      }
+
+      if (matchStarted || persistedGameId !== null) {
+        if (accessToken !== null && persistedGameId !== null) {
+          try {
+            await deletePersistedGame(accessToken, persistedGameId);
+          } catch {
+            // Best effort remote close before switching to accepted invitation game.
+          }
+        }
+        resetGame();
+      }
+
+      setQueuedGameId(payload.gameId);
+      setQueueRanked(true);
+      setQueueNotice(
+        payload.matchedWith === "human"
+          ? "Rival en cola encontrado. Preparando tablero..."
+          : "Rival bot encontrado. Preparando tablero...",
+      );
+      setAutoQueueStart(true);
+    } catch {
+      sessionStorage.removeItem(MATCHMAKING_MATCH_KEY);
+    }
+  }, [accessToken, matchStarted, persistedGameId, resetGame]);
+
+  useEffect(() => {
+    void consumeQueuedMatchFromSession();
+  }, [consumeQueuedMatchFromSession, location.key]);
+
+  useEffect(() => {
+    if (!isAuthenticated || accessToken === null || persistedGameId === null) {
+      gameplayWsRef.current?.close();
+      gameplayWsRef.current = null;
+      lastWsPlyRef.current = -1;
+      return;
+    }
+
+    const onEvent = (event: PersistedGameWsEvent): void => {
+      if (event.type === "game.closed") {
+        if (event.game_id !== persistedGameId || exitingMatch) {
+          return;
+        }
+        resetGame();
+        navigate("/", {
+          state: {
+            flash: {
+              message: "El rival salio de la partida. Volviste al lobby.",
+              tone: "warning",
+            },
+          },
+        });
+        return;
+      }
+      if (event.type !== "game.move.applied") {
+        return;
+      }
+      if (event.game_id !== persistedGameId) {
+        return;
+      }
+      if (event.move.ply <= lastWsPlyRef.current) {
+        return;
+      }
+      lastWsPlyRef.current = event.move.ply;
+
+      if (event.move.board_after !== null) {
+        const boardAfter = event.move.board_after as BoardState;
+        setBoard(boardAfter);
+      }
+      const remoteMove =
+        event.move.r1 === null || event.move.c1 === null || event.move.r2 === null || event.move.c2 === null
+          ? null
+          : { r1: event.move.r1, c1: event.move.c1, r2: event.move.r2, c2: event.move.c2 };
+      if (remoteMove !== null) {
+        setPreviewMove(remoteMove);
+        setPreviewUntil(Date.now() + AI_PREVIEW_MS);
+      }
+      setResolvedMoves((prev) => Math.max(prev, event.move.ply + 1));
+      setLastResolvedMove(remoteMove);
+
+      if (event.game.status === "finished") {
+        setMatchEndMs(Date.now());
+        setStatus("Partida finalizada.");
+      } else {
+        setStatus(`Sincronizado en vivo: jugada ${event.move.ply + 1}.`);
+      }
+    };
+
+    const socket = openPersistedGameSocket(accessToken, persistedGameId, onEvent);
+    gameplayWsRef.current = socket;
+
+    socket.onclose = () => {
+      if (gameplayWsRef.current === socket) {
+        gameplayWsRef.current = null;
+      }
+    };
+
+    return () => {
+      if (gameplayWsRef.current === socket) {
+        gameplayWsRef.current = null;
+      }
+      socket.close();
+    };
+  }, [accessToken, exitingMatch, isAuthenticated, navigate, persistedGameId, resetGame]);
 
   const leaveMatch = useCallback(
     async (options?: { redirectTo?: string; logoutAfter?: boolean }) => {
@@ -1414,8 +1588,28 @@ export function MatchPage(): JSX.Element {
   const startMatch = useCallback(async (): Promise<boolean> => {
     const selectedRivalIsHuman = selectedP2Player !== null && !selectedP2Player.is_bot;
     if (queuedGameId === null && selectedRivalIsHuman) {
-      setStatus("Rival humano detectado. Las invitaciones directas aun no estan habilitadas; usa cola ranked.");
-      emitFlash("Invitaciones directas proximamente. Usa cola ranked para enfrentar humanos.", "warning");
+      if (!isAuthenticated || accessToken === null || selectedP2Player === null) {
+        setStatus("Inicia sesion para enviar una solicitud 1v1.");
+        emitFlash("Debes iniciar sesion para invitar jugadores humanos.", "warning");
+        return false;
+      }
+      try {
+        const invitation = await createHumanInvitation(accessToken, selectedP2Player.user_id);
+        setOutgoingInvitation({
+          gameId: invitation.id,
+          opponentUserId: selectedP2Player.user_id,
+          opponentUsername: selectedP2Player.username,
+          rated: queueRanked,
+        });
+        setQueueNotice(`Invitacion enviada a ${selectedP2Player.username}.`);
+        setStatus(`Solicitud enviada a ${selectedP2Player.username}. Espera su respuesta...`);
+        emitFlash(`Solicitud 1v1 enviada a ${selectedP2Player.username}.`, "success");
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error ? error.message : "No se pudo enviar la solicitud.";
+        setStatus(message);
+        emitFlash(message, "error");
+      }
       return false;
     }
     if (isSpectate && selectedP1Bot === null) {
@@ -1425,6 +1619,7 @@ export function MatchPage(): JSX.Element {
     }
     playSfx(SFX.start, 0.32);
     setQueueNotice(null);
+    setOutgoingInvitation(null);
     setRatingBaseline(null);
     setFinishLpDelta(null);
     setFinishRatingDelta(null);
@@ -1520,8 +1715,6 @@ export function MatchPage(): JSX.Element {
     autoQueueStart,
     matchStarted,
     persisting,
-    selectedP1Bot,
-    selectedP2Bot,
     startMatch,
     thinking,
   ]);
@@ -1559,6 +1752,8 @@ export function MatchPage(): JSX.Element {
       const controller = sideController(next.current_player);
       if (controller === "human") {
         setStatus("Turno humano: define tu movimiento.");
+      } else if (controller === "remote_human") {
+        setStatus("Esperando jugada del rival...");
       } else {
         setStatus(`Turno IA (${controller}): analizando vector...`);
       }
@@ -1677,7 +1872,7 @@ export function MatchPage(): JSX.Element {
       const before = board;
       try {
         const nextBoard = applyMove(board, candidate);
-        animateTransition(before, nextBoard, candidate, HUMAN_PLAYER);
+        animateTransition(before, nextBoard, candidate, board.current_player as 1 | -1);
         enqueuePersistManualMove(before, candidate, "manual", "la jugada del equipo humano");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Invalid move";
@@ -1695,7 +1890,7 @@ export function MatchPage(): JSX.Element {
     const side = board.current_player as 1 | -1;
     const controller = sideController(side);
     try {
-      if (controller === "human") {
+      if (controller === "human" || controller === "remote_human") {
         return;
       }
       if (!hasValidMoves(board, side)) {
@@ -1755,7 +1950,8 @@ export function MatchPage(): JSX.Element {
     if (!matchStarted || interactionLocked || isGameOver(board) || showIntro) {
       return;
     }
-    if (sideController(board.current_player) === "human") {
+    const turnController = sideController(board.current_player);
+    if (turnController === "human" || turnController === "remote_human") {
       return;
     }
     void runAIMove();
@@ -1848,13 +2044,13 @@ export function MatchPage(): JSX.Element {
         isSpectate ||
         interactionLocked ||
         isGameOver(board) ||
-        board.current_player !== HUMAN_PLAYER ||
+        sideController(board.current_player) !== "human" ||
         showIntro
       ) {
         return;
       }
       const cell = board.grid[row][col];
-      if (cell === HUMAN_PLAYER) {
+      if (cell === board.current_player) {
         playSfx(SFX.uiClick, 0.24);
         setSelected([row, col]);
         return;
@@ -1873,7 +2069,7 @@ export function MatchPage(): JSX.Element {
       playSfx(SFX.uiClick, 0.2);
       void commitHumanMove(candidate);
     },
-    [board, commitHumanMove, interactionLocked, isSpectate, matchStarted, selected, selectedMoves, showIntro],
+    [board, commitHumanMove, interactionLocked, isSpectate, matchStarted, selected, selectedMoves, showIntro, sideController],
   );
 
   const previewOrigin = previewMove ? keyToCell(cellKey(previewMove.r1, previewMove.c1)) : null;
@@ -1991,7 +2187,13 @@ export function MatchPage(): JSX.Element {
                   UNDERBYTELABS // ATAXX-ZERO
                 </Badge>
                 <CardTitle>Arena Ataxx</CardTitle>
-                <CardDescription>{isSpectate ? `Simulacion IA vs IA (P1 ${p1Profile} vs P2 ${opponentProfile}).` : `Humano vs IA (${opponentProfile}).`}</CardDescription>
+                <CardDescription>
+                  {isSpectate
+                    ? `Simulacion IA vs IA (P1 ${p1Profile} vs P2 ${opponentProfile}).`
+                    : isHumanVsHumanMatch
+                      ? "Humano vs humano (1v1 invitacion)."
+                      : `Humano vs IA (${opponentProfile}).`}
+                </CardDescription>
                 {queueNotice ? <p className="mt-1 text-sm text-primary">{queueNotice}</p> : null}
               </div>
               <Button variant="secondary" size="sm" onClick={resetGame}>
@@ -2483,8 +2685,8 @@ export function MatchPage(): JSX.Element {
                   const canPick =
                     matchStarted &&
                     !isSpectate &&
-                    board.current_player === HUMAN_PLAYER &&
-                    cell === HUMAN_PLAYER;
+                    sideController(board.current_player) === "human" &&
+                    cell === board.current_player;
                   const isPreviewOrigin = previewMove !== null && previewMove.r1 === r && previewMove.c1 === c;
                   const isPreviewTarget = previewMove !== null && previewMove.r2 === r && previewMove.c2 === c;
                   const isRecentOrigin = lastOrigin !== null && lastOrigin.row === r && lastOrigin.col === c;
@@ -3060,10 +3262,10 @@ export function MatchPage(): JSX.Element {
                   />
                 </div>
                 <div className="picker-scroll max-h-72 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/80 p-1">
-                  {filteredPlayers.length === 0 ? (
+                  {selectablePlayers.length === 0 ? (
                     <p className="px-2 py-3 text-xs text-zinc-500">Sin resultados para la busqueda.</p>
                   ) : (
-                    filteredPlayers.map((player) => {
+                    selectablePlayers.map((player) => {
                       const isSelected =
                         rivalPickerTarget === "p1"
                           ? player.user_id === selectedP1BotId

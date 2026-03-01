@@ -1,0 +1,3 @@
+name: runpod-train
+runtime: python
+description: Ephemeral RunPod pod for Ataxx training jobs

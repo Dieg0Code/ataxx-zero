@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 
 from api.db.models import User
-from api.deps.auth import get_current_user_dep
+from api.deps.auth import get_auth_service_dep, get_current_user_dep
 from api.deps.inference import get_inference_service_dep
 from api.deps.matches import get_matches_service_dep
-from api.modules.gameplay.schemas import GameResponse
+from api.modules.auth.service import AuthService
+from api.modules.gameplay.schemas import GameListResponse, GameResponse
 from api.modules.matches.schemas import (
     MatchAdvanceBotResponse,
     MatchCreateRequest,
+    MatchInviteCreateRequest,
     MatchMovePayload,
     MatchMoveRequest,
     MatchMoveResponse,
@@ -23,6 +34,7 @@ from game.serialization import board_to_state
 router = APIRouter(prefix="/matches", tags=["matches"])
 MATCHES_SERVICE_DEP = Depends(get_matches_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
+AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
 
 
 @router.post(
@@ -80,6 +92,152 @@ async def post_match(
             detail=str(exc),
         ) from exc
     return GameResponse.model_validate(game)
+
+
+@router.post(
+    "/invitations",
+    response_model=GameResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create 1v1 Invitation",
+    description="Creates a pending human-vs-human invitation for opponent user.",
+)
+async def post_invitation(
+    request: MatchInviteCreateRequest,
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> GameResponse:
+    try:
+        game = await service.create_invitation(
+            actor_user_id=current_user.id,
+            opponent_user_id=request.opponent_user_id,
+            rated=request.rated,
+            season_id=request.season_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return GameResponse.model_validate(game)
+
+
+@router.get(
+    "/invitations/incoming",
+    response_model=GameListResponse,
+    summary="List Incoming 1v1 Invitations",
+    description="Returns pending human-vs-human invitations addressed to authenticated user.",
+)
+async def get_incoming_invitations(
+    limit: int = 10,
+    offset: int = 0,
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> GameListResponse:
+    total, items = await service.list_incoming_invitations(
+        actor_user_id=current_user.id,
+        limit=limit,
+        offset=offset,
+    )
+    rows = [GameResponse.model_validate(item) for item in items]
+    return GameListResponse(
+        items=rows,
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=(offset + limit) < total,
+    )
+
+
+@router.post(
+    "/invitations/{game_id}/accept",
+    response_model=GameResponse,
+    summary="Accept 1v1 Invitation",
+    description="Accepts a pending invitation and starts the match.",
+)
+async def post_accept_invitation(
+    game_id: UUID,
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> GameResponse:
+    try:
+        game = await service.accept_invitation(game_id=game_id, actor_user=current_user)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return GameResponse.model_validate(game)
+
+
+@router.post(
+    "/invitations/{game_id}/reject",
+    response_model=GameResponse,
+    summary="Reject 1v1 Invitation",
+    description="Rejects a pending invitation and aborts it.",
+)
+async def post_reject_invitation(
+    game_id: UUID,
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    current_user: User = CURRENT_USER_DEP,
+) -> GameResponse:
+    try:
+        game = await service.reject_invitation(game_id=game_id, actor_user=current_user)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return GameResponse.model_validate(game)
+
+
+@router.websocket(
+    "/invitations/ws",
+)
+async def invitations_ws(
+    websocket: WebSocket,
+    token: str | None = Query(default=None),
+    service: MatchesService = MATCHES_SERVICE_DEP,
+    auth_service: AuthService = AUTH_SERVICE_DEP,
+) -> None:
+    if token is None or len(token.strip()) == 0:
+        await websocket.close(code=4401, reason="Missing token.")
+        return
+
+    try:
+        current_user = await auth_service.get_user_from_access_token(token)
+    except PermissionError:
+        await websocket.close(code=4401, reason="Invalid token.")
+        return
+
+    await websocket.accept()
+    await websocket.send_json({"type": "invitations.subscribed"})
+
+    try:
+        while True:
+            total, items = await service.list_incoming_invitations(
+                actor_user_id=current_user.id,
+                limit=20,
+                offset=0,
+            )
+            rows = [GameResponse.model_validate(item).model_dump(mode="json") for item in items]
+            await websocket.send_json(
+                {
+                    "type": "invitations.status",
+                    "payload": {
+                        "total": total,
+                        "items": rows,
+                    },
+                }
+            )
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except (TimeoutError, asyncio.TimeoutError):
+                continue
+    except (WebSocketDisconnect, asyncio.TimeoutError):
+        return
 
 
 @router.get(

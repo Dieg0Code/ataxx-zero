@@ -1,0 +1,28 @@
+# Keep deployment context small and deterministic for Railway CLI uploads.
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Training/runtime artifacts not needed for app deploy.
+checkpoints/
+logs/
+hf_checkpoints/
+
+# Frontend build/cache artifacts are rebuilt in Docker build stage.
+web/node_modules/
+web/dist/
+web/.vite/
+web/playwright-report/
+web/test-results/
+
+# Local/editor files
+.env
+.env.*
+*.local
+*.swp
+*.tmp
+node_modules/

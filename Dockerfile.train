@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.10-slim AS train-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:${PATH}"
+
+WORKDIR /app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential libgomp1 tini && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --group train --group export
+
+COPY src ./src
+COPY train.py ./train.py
+COPY train_improved.py ./train_improved.py
+
+ENTRYPOINT ["tini", "--"]
+CMD ["python", "train.py", "--help"]

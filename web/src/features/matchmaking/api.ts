@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from "@/shared/api/client";
+import { buildWsUrl } from "@/shared/api/ws";
 
 export type QueueStatus = "idle" | "waiting" | "matched" | "canceled";
 export type MatchedWith = "human" | "bot";
@@ -81,10 +82,7 @@ export function openQueueSocket(
   token: string,
   onEvent: (event: QueueWsEvent) => void,
 ): WebSocket {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const wsUrl = `${protocol}://${window.location.host}/api/v1/matchmaking/queue/ws?token=${encodeURIComponent(
-    token,
-  )}`;
+  const wsUrl = buildWsUrl("/api/v1/matchmaking/queue/ws", { token });
   const socket = new WebSocket(wsUrl);
   socket.onmessage = (messageEvent) => {
     try {

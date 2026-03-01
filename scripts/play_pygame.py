@@ -97,6 +97,9 @@ def _parse_args() -> argparse.Namespace:
 def _resolve_device(device: str) -> str:
     if device == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        print("CUDA requested but not available; falling back to CPU.")
+        return "cpu"
     return device
 
 
@@ -137,17 +140,33 @@ def _load_system(checkpoint_path: str, device: str) -> AtaxxZero:
     from model.system import AtaxxZero
 
     if checkpoint_path.endswith(".ckpt"):
-        system = AtaxxZero.load_from_checkpoint(checkpoint_path, map_location=device)
+        try:
+            system = AtaxxZero.load_from_checkpoint(checkpoint_path, map_location=device)
+        except RuntimeError as exc:
+            raise ValueError(
+                "Checkpoint incompatible con architecture policy_head espacial; "
+                "reentrena o usa carga parcial manual (strict=False)."
+            ) from exc
     else:
         system = AtaxxZero()
         if checkpoint_path:
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=device,
+                weights_only=False,
+            )
             if not isinstance(checkpoint, dict):
                 raise ValueError("Invalid .pt checkpoint format")
             state_dict_obj = checkpoint.get("state_dict")
             if not isinstance(state_dict_obj, dict):
                 raise ValueError("Checkpoint must contain key 'state_dict'")
-            system.load_state_dict(state_dict_obj)
+            try:
+                system.load_state_dict(state_dict_obj)
+            except RuntimeError as exc:
+                raise ValueError(
+                    "Checkpoint incompatible con architecture policy_head espacial; "
+                    "reentrena o usa carga parcial manual (strict=False)."
+                ) from exc
     system.eval()
     system.to(device)
     return system

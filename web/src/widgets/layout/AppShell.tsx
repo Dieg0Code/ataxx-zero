@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
+  Bell,
   CheckCircle2,
   Home,
   Info,
@@ -12,6 +13,8 @@ import {
   User as UserIcon,
 } from "lucide-react";
 import { useAuth } from "@/app/providers/useAuth";
+import { InvitationList } from "@/features/matches/InvitationList";
+import { useInvitations } from "@/features/matches/useInvitations";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/utils";
@@ -21,6 +24,8 @@ const NAV_ITEMS = [
   { to: "/ranking", label: "Ranking", icon: Trophy },
   { to: "/profile", label: "Perfil", icon: UserIcon },
 ];
+const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
+const INVITE_SFX_PATH = "/sfx/queue_found.ogg";
 
 type FlashTone = "success" | "warning" | "error" | "info";
 
@@ -81,6 +86,19 @@ function FlashIcon({ tone }: { tone: FlashTone }): JSX.Element {
   return <Info className="h-4 w-4" />;
 }
 
+function playSfx(path: string, volume = 0.24): void {
+  try {
+    const audio = new Audio(path);
+    audio.volume = Math.max(0, Math.min(1, volume));
+    const playResult = audio.play();
+    if (playResult && typeof playResult.catch === "function") {
+      void playResult.catch(() => {});
+    }
+  } catch {
+    // ignore browser/runtime audio errors
+  }
+}
+
 type AppShellProps = {
   children: React.ReactNode;
   onNavigateAttempt?: (to: string) => boolean;
@@ -88,10 +106,51 @@ type AppShellProps = {
 };
 
 export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppShellProps): JSX.Element {
-  const { isAuthenticated, user, logout } = useAuth();
+  const { isAuthenticated, user, accessToken, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [flashMessage, setFlashMessage] = useState<FlashMessage | null>(null);
+  const [invitePanelOpen, setInvitePanelOpen] = useState(false);
+  const invitePanelRef = useRef<HTMLDivElement | null>(null);
+  const previousInviteCountRef = useRef(0);
+  const {
+    invitations: pendingInvitations,
+    actionLoadingId: inviteActionLoadingId,
+    acceptInvitationById,
+    rejectInvitationById,
+  } = useInvitations({
+    accessToken,
+    enabled: isAuthenticated,
+    includeInitialFetch: true,
+    scope: "appshell",
+    fallbackPollingMs: 3000,
+  });
+  const incomingInvitations = pendingInvitations.length;
+  const sortedInvitations = useMemo(
+    () =>
+      [...pendingInvitations].sort((a, b) => {
+        const aTs = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTs = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bTs - aTs;
+      }),
+    [pendingInvitations],
+  );
+
+  useEffect(() => {
+    const previous = previousInviteCountRef.current;
+    if (incomingInvitations > previous) {
+      const incomingDelta = incomingInvitations - previous;
+      playSfx(INVITE_SFX_PATH, 0.24);
+      setFlashMessage({
+        message:
+          incomingDelta > 1
+            ? `Recibiste ${incomingDelta} invitaciones 1v1 nuevas.`
+            : "Recibiste una invitacion 1v1.",
+        tone: "info",
+      });
+    }
+    previousInviteCountRef.current = incomingInvitations;
+  }, [incomingInvitations]);
 
   useEffect(() => {
     const parsedFlash = normalizeFlash(location.state);
@@ -115,13 +174,70 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     };
   }, [flashMessage]);
 
+  useEffect(() => {
+    if (pendingInvitations.length === 0) {
+      setInvitePanelOpen(false);
+    }
+  }, [pendingInvitations.length]);
+
+  useEffect(() => {
+    if (!invitePanelOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent): void => {
+      const panel = invitePanelRef.current;
+      if (panel === null) {
+        return;
+      }
+      if (event.target instanceof Node && !panel.contains(event.target)) {
+        setInvitePanelOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [invitePanelOpen]);
+
+  const acceptPendingInvitation = async (gameId: string): Promise<void> => {
+    try {
+      await acceptInvitationById(gameId);
+      sessionStorage.setItem(
+        MATCHMAKING_MATCH_KEY,
+        JSON.stringify({
+          gameId,
+          matchedWith: "human",
+          createdAt: Date.now(),
+          source: "invite",
+        }),
+      );
+      setInvitePanelOpen(false);
+      navigate("/match?queue=1", {
+        state: { flash: { message: "Invitacion aceptada. Entrando a la arena...", tone: "success" } },
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "No se pudo aceptar la invitacion.";
+      setFlashMessage({ message: detail, tone: "error" });
+    }
+  };
+
+  const rejectPendingInvitation = async (gameId: string): Promise<void> => {
+    try {
+      await rejectInvitationById(gameId);
+      setFlashMessage({ message: "Invitacion rechazada.", tone: "info" });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "No se pudo rechazar la invitacion.";
+      setFlashMessage({ message: detail, tone: "error" });
+    }
+  };
+
   return (
     <div className="mx-auto min-h-screen w-full max-w-[1320px] px-3 py-3 sm:px-5">
       <motion.header
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.28, ease: "easeOut" }}
-        className="relative overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-950/60 px-4 py-3 backdrop-blur-xl"
+        className="relative overflow-visible rounded-2xl border border-zinc-800/90 bg-zinc-950/60 px-4 py-3 backdrop-blur-xl"
       >
         <motion.div
           aria-hidden="true"
@@ -170,7 +286,7 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
           </div>
         </div>
 
-        <nav className="mt-3 flex items-center gap-1 overflow-x-hidden overflow-y-hidden border-t border-zinc-800/80 pt-2">
+        <nav className="mt-3 flex items-center gap-1 overflow-visible border-t border-zinc-800/80 pt-2">
           {NAV_ITEMS.map((item) => {
             const active = location.pathname === item.to;
             const Icon = item.icon;
@@ -202,6 +318,14 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
                 >
                   <Icon className={cn("h-3.5 w-3.5 transition-colors", active ? "text-lime-300" : "text-textDim")} />
                   <span>{item.label}</span>
+                  {item.to === "/profile" && incomingInvitations > 0 ? (
+                    <span
+                      aria-label={`${incomingInvitations} invitaciones pendientes`}
+                      className="inline-flex min-w-[1.2rem] items-center justify-center rounded-full border border-lime-300/70 bg-lime-300/18 px-1 text-[10px] font-semibold leading-4 text-lime-200 shadow-[0_0_10px_rgba(163,230,53,0.3)]"
+                    >
+                      {incomingInvitations > 9 ? "9+" : incomingInvitations}
+                    </span>
+                  ) : null}
                   {active ? (
                     <motion.span
                       layoutId="nav-active-indicator"
@@ -213,6 +337,77 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
               </Button>
             );
           })}
+          {isAuthenticated ? (
+            <div className="relative ml-auto" ref={invitePanelRef}>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn(
+                  "relative rounded-md px-3 text-textDim transition-all duration-200 hover:-translate-y-0.5 hover:text-lime-200",
+                  incomingInvitations > 0 &&
+                    "border border-lime-300/55 bg-lime-300/12 text-lime-200 shadow-[0_0_18px_rgba(163,230,53,0.28)]",
+                  invitePanelOpen && "bg-lime-400/10 text-lime-200 shadow-[0_0_12px_rgba(163,230,53,0.12)]",
+                )}
+                aria-label="Ver invitaciones"
+                onClick={() => setInvitePanelOpen((prev) => !prev)}
+              >
+                <motion.span
+                  animate={
+                    incomingInvitations > 0
+                      ? { rotate: [0, -10, 8, -6, 0], scale: [1, 1.08, 1] }
+                      : { rotate: 0, scale: 1 }
+                  }
+                  transition={{
+                    duration: incomingInvitations > 0 ? 1.2 : 0.2,
+                    repeat: incomingInvitations > 0 ? Infinity : 0,
+                    repeatDelay: 1.8,
+                    ease: "easeInOut",
+                  }}
+                  className="inline-flex"
+                >
+                  <Bell className="h-3.5 w-3.5" />
+                </motion.span>
+                {incomingInvitations > 0 ? (
+                  <span className="ml-1.5 inline-flex min-w-[1.2rem] items-center justify-center rounded-full border border-lime-300/80 bg-lime-300/24 px-1 text-[10px] font-semibold leading-4 text-lime-100 shadow-[0_0_14px_rgba(163,230,53,0.42)]">
+                    {incomingInvitations > 9 ? "9+" : incomingInvitations}
+                  </span>
+                ) : null}
+              </Button>
+              <AnimatePresence>
+                {invitePanelOpen ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    className="absolute right-0 top-11 z-40 w-80 rounded-lg border border-zinc-700/90 bg-zinc-950/95 p-2 shadow-[0_18px_44px_rgba(0,0,0,0.55)] backdrop-blur"
+                  >
+                    <div className="mb-2 flex items-center justify-between px-1">
+                      <p className="text-xs uppercase tracking-[0.12em] text-zinc-400">Invitaciones</p>
+                      <span className="text-xs font-semibold text-lime-300">{incomingInvitations}</span>
+                    </div>
+                    <div className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
+                      <InvitationList
+                        items={sortedInvitations}
+                        isLoading={false}
+                        isError={false}
+                        actionLoadingId={inviteActionLoadingId}
+                        variant="panel"
+                        emptyText="Sin invitaciones pendientes."
+                        onAccept={(gameId) => {
+                          void acceptPendingInvitation(gameId);
+                        }}
+                        onReject={(gameId) => {
+                          void rejectPendingInvitation(gameId);
+                        }}
+                      />
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          ) : null}
         </nav>
       </motion.header>
       <AnimatePresence initial={false}>

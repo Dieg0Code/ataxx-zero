@@ -1,4 +1,5 @@
 import { apiDeleteNoContent, apiGet, apiPost } from "@/shared/api/client";
+import { buildWsUrl } from "@/shared/api/ws";
 import type { BoardState, Move } from "@/features/match/types";
 import type { MoveMode } from "@/features/match/api";
 
@@ -81,6 +82,11 @@ export type PersistedGameWsEvent =
       type: "game.subscribed";
       game_id: string;
       status: string;
+    }
+  | {
+      type: "game.closed";
+      game_id: string;
+      reason: string;
     }
   | {
       type: "game.move.applied";
@@ -273,10 +279,7 @@ export function openPersistedGameSocket(
   gameId: string,
   onEvent: (event: PersistedGameWsEvent) => void,
 ): WebSocket {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const wsUrl = `${protocol}://${window.location.host}/api/v1/gameplay/games/${gameId}/ws?token=${encodeURIComponent(
-    token,
-  )}`;
+  const wsUrl = buildWsUrl(`/api/v1/gameplay/games/${gameId}/ws`, { token });
   const socket = new WebSocket(wsUrl);
   socket.onmessage = (messageEvent) => {
     try {

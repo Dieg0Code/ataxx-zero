@@ -1,0 +1,118 @@
+name: RunPod Train Start (Pulumi)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Pulumi stack (org/stack)"
+        required: true
+        default: "dieg0code/train"
+      pod_name:
+        description: "RunPod pod name"
+        required: true
+        default: "ataxx-zero-train"
+      gpu_type_id:
+        description: "RunPod GPU type id"
+        required: true
+        default: "NVIDIA GeForce RTX 4090"
+      cloud_type:
+        description: "RunPod cloud type"
+        required: true
+        default: "SECURE"
+      image_name:
+        description: "Container image for pod"
+        required: true
+        default: "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+      repository:
+        description: "GitHub repository owner/name"
+        required: true
+        default: "dieg0code/ataxx-zero"
+      git_ref:
+        description: "Git ref (sha or branch)"
+        required: true
+        default: "main"
+      hf_repo_id:
+        description: "HF repository for checkpoints"
+        required: true
+        default: "dieg0code/ataxx-zero"
+      hf_run_id:
+        description: "HF namespace for this model lineage"
+        required: true
+        default: "policy_spatial_v1"
+      train_args:
+        description: "Arguments passed to train.py"
+        required: true
+        default: "--no-onnx --quiet --devices 1 --strategy auto --num-workers 4 --keep-local-ckpts 2 --keep-log-versions 1 --hf --iterations 40 --episodes 70 --sims 600 --epochs 5 --batch-size 512 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.45 --opp-heuristic 0.50 --opp-random 0.05 --opp-heu-easy 0.00 --opp-heu-normal 0.25 --opp-heu-hard 0.75 --model-swap-prob 0.5 --selfplay-workers 8 --monitor-log-every 3"
+
+concurrency:
+  group: runpod-train-start-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PULUMI_SKIP_UPDATE_CHECK: "true"
+      STACK_NAME: ${{ inputs.stack }}
+      RUNPOD_API_TOKEN: ${{ secrets.RUNPOD_API_TOKEN }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+    steps:
+      - name: Validate required secrets
+        run: |
+          test -n "${RUNPOD_API_TOKEN}" || (echo "Missing RUNPOD_API_TOKEN" && exit 1)
+          test -n "${HF_TOKEN}" || (echo "Missing HF_TOKEN" && exit 1)
+          test -n "${PULUMI_ACCESS_TOKEN}" || (echo "Missing PULUMI_ACCESS_TOKEN" && exit 1)
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Pulumi CLI
+        uses: pulumi/actions@v6
+        with:
+          command: version
+
+      - name: Install stack dependencies
+        working-directory: infra/runpod-train
+        run: pip install -r requirements.txt
+
+      - name: Login to Pulumi Cloud
+        run: pulumi login
+
+      - name: Select stack
+        working-directory: infra/runpod-train
+        run: pulumi stack select "${STACK_NAME}" --create
+
+      - name: Set stack config
+        working-directory: infra/runpod-train
+        run: |
+          pulumi config set runpod:token "${RUNPOD_API_TOKEN}" --secret
+          pulumi config set runpod-train:podName "${{ inputs.pod_name }}"
+          pulumi config set runpod-train:gpuTypeId "${{ inputs.gpu_type_id }}"
+          pulumi config set runpod-train:cloudType "${{ inputs.cloud_type }}"
+          pulumi config set runpod-train:imageName "${{ inputs.image_name }}"
+          pulumi config set runpod-train:repository "${{ inputs.repository }}"
+          pulumi config set runpod-train:gitRef "${{ inputs.git_ref }}"
+          pulumi config set runpod-train:trainArgs "${{ inputs.train_args }}"
+          pulumi config set runpod-train:hfRepoId "${{ inputs.hf_repo_id }}"
+          pulumi config set runpod-train:hfRunId "${{ inputs.hf_run_id }}"
+          pulumi config set runpod-train:hfToken "${HF_TOKEN}" --secret
+
+      - name: Create or refresh training pod
+        working-directory: infra/runpod-train
+        run: pulumi up --yes --skip-preview
+
+      - name: Print pod id
+        working-directory: infra/runpod-train
+        run: |
+          echo "Pod created:"
+          pulumi stack output podId

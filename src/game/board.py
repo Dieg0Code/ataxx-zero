@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import numpy as np
 
 from .constants import (
@@ -64,6 +66,9 @@ class AtaxxBoard:
         self.current_player: Player = player
         # Variant anti-loop rule: hard cap on total half-moves.
         self.half_moves = 0
+        # Track repeated positions including side-to-move.
+        self._position_counts: Counter[tuple[int, bytes]] = Counter()
+        self._position_counts[self._position_key()] = 1
 
     def _init_pieces(self) -> None:
         """Standard opening with opposite corners occupied."""
@@ -82,6 +87,7 @@ class AtaxxBoard:
         new_board.p1_count = self.p1_count
         new_board.p2_count = self.p2_count
         new_board.empty_count = self.empty_count
+        new_board._position_counts = Counter(self._position_counts)
         return new_board
 
     def copy_from(self, other: AtaxxBoard) -> None:
@@ -92,6 +98,10 @@ class AtaxxBoard:
         self.p1_count = other.p1_count
         self.p2_count = other.p2_count
         self.empty_count = other.empty_count
+        self._position_counts = Counter(other._position_counts)
+
+    def _position_key(self) -> tuple[int, bytes]:
+        return int(self.current_player), self.grid.tobytes()
 
     def _has_move_for(self, player: Player) -> bool:
         piece_coords = np.argwhere(self.grid == player)
@@ -136,6 +146,7 @@ class AtaxxBoard:
                 raise ValueError("Pass is illegal when legal moves exist.")
             self.current_player = opponent(self.current_player)
             self.half_moves += 1
+            self._position_counts[self._position_key()] += 1
             return
 
         r_start, c_start, r_end, c_end = move
@@ -164,6 +175,7 @@ class AtaxxBoard:
         self._infect_neighbors(r_end, c_end)
         self.current_player = opponent(self.current_player)
         self.half_moves += 1
+        self._position_counts[self._position_key()] += 1
 
     def _infect_neighbors(self, r: int, c: int) -> None:
         """Convert adjacent opponent pieces around (r, c)."""
@@ -200,6 +212,9 @@ class AtaxxBoard:
         if self.half_moves >= 100:
             return True
 
+        if max(self._position_counts.values(), default=0) >= 3:
+            return True
+
         return not self._has_move_for(self.current_player) and not self._has_move_for(
             opponent(self.current_player)
         )
@@ -208,6 +223,10 @@ class AtaxxBoard:
         """Return game result from PLAYER_1 perspective."""
         if not self.is_game_over():
             raise ValueError("Result is only defined when the game is over.")
+
+        # Threefold repetition is a forced draw regardless of piece counts.
+        if self._position_counts[self._position_key()] >= 3:
+            return DRAW
 
         p1_count = self.p1_count
         p2_count = self.p2_count
@@ -234,16 +253,21 @@ class AtaxxBoard:
 
     def get_observation(self) -> np.ndarray:
         """
-        3-channel observation for NN:
-        0: own pieces, 1: opponent pieces, 2: empty squares.
+        4-channel observation for NN:
+        0: own pieces, 1: opponent pieces, 2: empty squares, 3: half-move progress.
         """
-        obs = np.zeros((3, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         obs[0] = np.asarray(self.grid == self.current_player, dtype=np.float32)
         obs[1] = np.asarray(
             self.grid == opponent(self.current_player),
             dtype=np.float32,
         )
         obs[2] = np.asarray(self.grid == EMPTY, dtype=np.float32)
+        obs[3] = np.full(
+            (BOARD_SIZE, BOARD_SIZE),
+            min(1.0, float(self.half_moves) / 100.0),
+            dtype=np.float32,
+        )
         return obs
 
     def __str__(self) -> str:
