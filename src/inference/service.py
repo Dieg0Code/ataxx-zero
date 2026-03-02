@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal, Protocol, TypedDict
 
 import numpy as np
-import torch
 
 from engine.mcts import MCTS
 from game.actions import ACTION_SPACE
@@ -52,6 +53,15 @@ class _OnnxSessionLike(Protocol):
 
     def run(self, output_names: list[str] | None, input_feed: dict[str, Any]) -> list[Any]:
         ...
+
+
+@lru_cache(maxsize=1)
+def _get_torch_module() -> ModuleType | None:
+    """Import torch lazily so API startup does not hard-fail in lightweight runtimes."""
+    try:
+        return importlib.import_module("torch")
+    except ModuleNotFoundError:
+        return None
 
 
 class InferenceService:
@@ -104,10 +114,24 @@ class InferenceService:
     @staticmethod
     def _resolve_device(device: str) -> str:
         if device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            torch_module = _get_torch_module()
+            if torch_module is not None and bool(torch_module.cuda.is_available()):
+                return "cuda"
+            return "cpu"
         return device
 
+    @staticmethod
+    def _require_torch() -> ModuleType:
+        torch_module = _get_torch_module()
+        if torch_module is None:
+            raise ValueError(
+                "Torch is required for checkpoint-backed inference. "
+                "Use ONNX artifacts or install torch in this runtime."
+            )
+        return torch_module
+
     def _load_system(self) -> AtaxxZero:
+        torch_module = self._require_torch()
         ckpt = self.checkpoint_path
         if ckpt.suffix == ".ckpt":
             try:
@@ -118,7 +142,7 @@ class InferenceService:
                     "reentrena o usa carga parcial manual (strict=False)."
                 ) from exc
 
-        checkpoint = torch.load(str(ckpt), map_location=self.device, weights_only=False)
+        checkpoint = torch_module.load(str(ckpt), map_location=self.device, weights_only=False)
         if not isinstance(checkpoint, dict):
             raise ValueError("Invalid .pt checkpoint format: expected dictionary.")
         state_dict_obj = checkpoint.get("state_dict")
@@ -237,15 +261,18 @@ class InferenceService:
 
         if self.system is None:
             raise ValueError("Fast inference unavailable: no torch checkpoint and ONNX failed.")
+        torch_module = self._require_torch()
         mask_np = self._legal_action_mask(board)
         obs = board.get_observation()
 
-        obs_tensor = torch.from_numpy(obs).unsqueeze(0).to(self.device)
-        mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).to(self.device)
-        with torch.no_grad():
+        obs_tensor = torch_module.from_numpy(obs).unsqueeze(0).to(self.device)
+        mask_tensor = torch_module.from_numpy(mask_np).unsqueeze(0).to(self.device)
+        with torch_module.no_grad():
             policy_logits, value_tensor = self.system.model(obs_tensor, action_mask=mask_tensor)
 
-        policy = torch.softmax(policy_logits, dim=1).squeeze(0).detach().cpu().numpy()
+        policy = (
+            torch_module.softmax(policy_logits, dim=1).squeeze(0).detach().cpu().numpy()
+        )
         if not np.all(np.isfinite(policy)):
             legal_indices = np.flatnonzero(mask_np > 0)
             if legal_indices.size == 0:
@@ -269,6 +296,7 @@ class InferenceService:
         if self.system is None:
             # If no torch model is available, degrade gracefully to fast ONNX/Torch.
             return self._fast_result(board)
+        torch_module = self._require_torch()
         mcts = self._ensure_mcts()
         probs = mcts.run(board=board, add_dirichlet_noise=False, temperature=0.0)
         action_idx = int(np.argmax(probs))
@@ -277,9 +305,9 @@ class InferenceService:
         # Value still comes from raw net (current-player perspective), which is stable and cheap.
         mask_np = self._legal_action_mask(board)
         obs = board.get_observation()
-        obs_tensor = torch.from_numpy(obs).unsqueeze(0).to(self.device)
-        mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).to(self.device)
-        with torch.no_grad():
+        obs_tensor = torch_module.from_numpy(obs).unsqueeze(0).to(self.device)
+        mask_tensor = torch_module.from_numpy(mask_np).unsqueeze(0).to(self.device)
+        with torch_module.no_grad():
             _, value_tensor = self.system.model(obs_tensor, action_mask=mask_tensor)
         value = float(value_tensor.item())
         return InferenceResult(move=move, action_idx=action_idx, value=value, mode="strong")
