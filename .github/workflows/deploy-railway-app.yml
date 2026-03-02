@@ -51,6 +51,12 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Force Watch-Path Match For Railway
+        run: |
+          # Railway skips deploys when changed files don't match watch patterns.
+          # We create a CI-only stamp under /src so /src/** always matches.
+          printf "ci-deploy:%s:%s\n" "${GITHUB_SHA}" "${GITHUB_RUN_ID}" > src/.railway_ci_deploy_stamp
+
       - name: Deploy to Railway (CI mode)
         run: |
           railway up \
