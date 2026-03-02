@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PersistedGameWsEvent } from "@/features/match/persistence";
 import type { BoardState } from "@/features/match/types";
 import { MatchPage } from "@/pages/match/MatchPage";
 
@@ -465,26 +466,26 @@ describe("MatchPage queued human vs human", () => {
       }),
     );
 
-    let wsEventHandler: ((event: import("@/features/match/persistence").PersistedGameWsEvent) => void) | null = null;
-    openPersistedGameSocketMock.mockImplementation(
-      (_token: string, _gameId: string, onEvent: (event: import("@/features/match/persistence").PersistedGameWsEvent) => void) => {
-        wsEventHandler = onEvent;
-        return {
-          close: vi.fn(),
-          onclose: null,
-          onmessage: null,
-        };
-      },
-    );
+    let wsEventHandler: ((event: PersistedGameWsEvent) => void) | null = null;
+    openPersistedGameSocketMock.mockImplementation((...args: unknown[]) => {
+      // Vitest mocks default to unknown/any signatures; cast the event callback explicitly.
+      wsEventHandler = args[2] as (event: PersistedGameWsEvent) => void;
+      return {
+        close: vi.fn(),
+        onclose: null,
+        onmessage: null,
+      };
+    });
 
     render(<MatchPage />);
 
     await waitFor(() => {
       expect(screen.getByText(/humano vs humano/i)).toBeInTheDocument();
     });
-    expect(wsEventHandler).not.toBeNull();
-
-    wsEventHandler?.({
+    if (wsEventHandler === null) {
+      throw new Error("Expected websocket handler to be initialized.");
+    }
+    (wsEventHandler as (event: PersistedGameWsEvent) => void)({
       type: "game.closed",
       game_id: "game-h2h",
       reason: "deleted_by_participant",

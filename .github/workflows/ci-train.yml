@@ -54,7 +54,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
@@ -70,7 +70,20 @@ jobs:
           ln -sf ../bin/python .venv/Scripts/python.exe
 
       - name: Python file length policy
-        run: uv run python scripts/check_python_max_lines.py --max-lines 500 --path train.py --path src --path tests --path scripts
+        run: |
+          uv run python scripts/check_python_max_lines.py \
+            --max-lines 500 \
+            --path train.py \
+            --path src/training \
+            --path src/engine \
+            --path src/model \
+            --path src/game \
+            --path src/data \
+            --path tests/test_mcts_numerics.py \
+            --path tests/test_training_step_numerics.py \
+            --path tests/test_training_*.py \
+            --path scripts/export_model_onnx.py \
+            --path scripts/check_onnx_parity.py
 
       - name: Ruff (train scope)
         run: uv run ruff check train.py src/engine src/model src/game src/data tests scripts

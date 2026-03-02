@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Activity,
   ArrowRight,
@@ -83,12 +83,12 @@ const SFX = {
   queueDeploy: "/sfx/queue_accept.ogg",
 } as const;
 
-const panelSectionVariants = {
+const panelSectionVariants: Variants = {
   hidden: { opacity: 0, y: 8 },
   show: (delay = 0) => ({
     opacity: 1,
     y: 0,
-    transition: { duration: 0.32, ease: "easeOut", delay },
+    transition: { duration: 0.32, ease: "easeOut" as const, delay },
   }),
 };
 

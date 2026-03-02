@@ -7,7 +7,7 @@ const logoutMock = vi.fn();
 const openInvitationsSocketMock = vi.fn();
 const acceptInvitationMock = vi.fn();
 const rejectInvitationMock = vi.fn();
-let authState = {
+let authState: { isAuthenticated: boolean; user: { username: string } | null } = {
   isAuthenticated: true,
   user: { username: "test" },
 };

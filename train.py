@@ -42,9 +42,10 @@ from training.config_runtime import (  # noqa: E402
     parse_args,
     validate_config,
 )
+from training.eval_runtime import evaluate_model  # noqa: E402
 from training.monitor import TrainingMonitor  # noqa: E402
 from training.progress_callbacks import EpochPulseCallback  # noqa: E402
-from training.selfplay_runtime import evaluate_model, execute_self_play  # noqa: E402
+from training.selfplay_runtime import execute_self_play  # noqa: E402
 from training.trainer_runtime import (  # noqa: E402
     build_trainer,
     export_onnx,
