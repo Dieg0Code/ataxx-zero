@@ -31,9 +31,9 @@ repository = cfg.get("repository") or "dieg0code/ataxx-zero"
 git_ref = cfg.get("gitRef") or "main"
 train_args = cfg.get("trainArgs") or ""
 
-docker_start_cmd = cfg.get("dockerStartCmd")
-if docker_start_cmd is None or docker_start_cmd.strip() == "":
-    docker_start_cmd = build_train_start_command(
+docker_args = cfg.get("dockerArgs") or cfg.get("dockerStartCmd")
+if docker_args is None or docker_args.strip() == "":
+    docker_args = build_train_start_command(
         repository=repository,
         git_ref=git_ref,
         train_args=train_args,
@@ -61,7 +61,7 @@ trainer = runpod.Pod(
     volume_mount_path=volume_mount_path,
     min_vcpu_count=min_vcpu_count,
     min_memory_in_gb=min_memory_in_gb,
-    docker_start_cmd=docker_start_cmd,
+    docker_args=docker_args,
     env=env,
 )
 
