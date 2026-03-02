@@ -58,7 +58,7 @@ RUN mkdir -p /app/checkpoints
 EXPOSE 8000
 
 ENTRYPOINT ["tini", "--"]
-CMD ["uvicorn", "api.app:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn api.app:app --app-dir src --host 0.0.0.0 --port ${PORT:-8000}"]
 
 
 # Optional target that bakes a local torch checkpoint into the image.
