@@ -49,3 +49,8 @@ def get_inference_service_dep() -> InferenceService:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Inference service unavailable: {exc}",
         ) from exc
+    except (ModuleNotFoundError, ImportError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Inference service unavailable: {exc}",
+        ) from exc
