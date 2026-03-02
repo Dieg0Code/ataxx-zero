@@ -25,6 +25,7 @@ volume_mount_path = cfg.get("volumeMountPath") or "/workspace"
 min_vcpu_count = cfg.get_int("minVcpuCount") or 8
 min_memory_in_gb = cfg.get_int("minMemoryInGb") or 32
 gpu_count = cfg.get_int("gpuCount") or 1
+terminate_after = cfg.get("terminateAfter") or "8h"
 hf_repo_id = cfg.get("hfRepoId") or ""
 hf_run_id = cfg.get("hfRunId") or "policy_spatial_v1"
 hf_token = cfg.get_secret("hfToken")
@@ -63,6 +64,7 @@ trainer = runpod.Pod(
     volume_mount_path=volume_mount_path,
     min_vcpu_count=min_vcpu_count,
     min_memory_in_gb=min_memory_in_gb,
+    terminate_after=terminate_after,
     docker_args=docker_args,
     env=env,
 )

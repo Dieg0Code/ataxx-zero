@@ -26,6 +26,9 @@ gh workflow run train-runpod-start.yml \
   --ref main \
   -f stack=dieg0code/train \
   -f pod_name=ataxx-zero-train \
+  -f terminate_after=8h \
+  -f allow_when_any_pod_active=false \
+  -f allow_replace_running=false \
   -f gpu_type_id="NVIDIA GeForce RTX 4090" \
   -f cloud_type=SECURE \
   -f image_name="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04" \
@@ -35,6 +38,16 @@ gh workflow run train-runpod-start.yml \
   -f hf_run_id=policy_spatial_v1 \
   -f train_args="--no-onnx --quiet --devices 1 --strategy auto --num-workers 4 --keep-local-ckpts 2 --keep-log-versions 1 --hf --iterations 40 --episodes 70 --sims 600 --epochs 5 --batch-size 512 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.45 --opp-heuristic 0.50 --opp-random 0.05 --opp-heu-easy 0.00 --opp-heu-normal 0.25 --opp-heu-hard 0.75 --model-swap-prob 0.5 --selfplay-workers 8 --monitor-log-every 3"
 ```
+
+Notas operativas:
+
+- `start` ahora valida el token HF y acceso al repo antes de lanzar GPU.
+- `start` aborta si detecta pods activos en la cuenta (incluye pods manuales fuera de Pulumi),
+  a menos que definas `allow_when_any_pod_active=true`.
+- `start` ahora aborta si el stack ya tiene un pod activo (evita doble cobro accidental).
+- `terminate_after` queda en `8h` por defecto para cortar cobro aunque falle el reconcile.
+- El arranque fuerza `--hf` y agrega `--save-every 1` si no venía en `train_args`.
+- Si realmente necesitas reemplazar un pod activo, usa `-f allow_replace_running=true`.
 
 Reconcile manual (opcional, ya existe cron cada 30 min):
 

@@ -14,7 +14,7 @@ export type HumanInvitation = {
   created_at?: string;
 };
 
-type PagedInvitations = {
+export type PagedInvitations = {
   items: HumanInvitation[];
   total: number;
   limit: number;

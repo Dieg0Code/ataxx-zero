@@ -32,8 +32,40 @@ class TestRunPodInfra(unittest.TestCase):
             hf_run_id="policy_spatial_v1",
         )
         self.assertIn("git checkout abc123def", cmd)
+        self.assertIn("--hf", cmd)
+        self.assertNotIn("--save-every 1", cmd)
         self.assertIn("--hf-repo-id dieg0code/ataxx-zero", cmd)
         self.assertIn("--hf-run-id policy_spatial_v1", cmd)
+        self.assertIn('test -n "${HF_TOKEN:-}"', cmd)
+
+    def test_build_train_start_command_adds_hf_and_save_every_defaults(self) -> None:
+        cmd = build_train_start_command(
+            repository="dieg0code/ataxx-zero",
+            git_ref="main",
+            train_args="--iterations 5",
+            hf_repo_id="dieg0code/ataxx-zero",
+            hf_run_id="policy_spatial_v1",
+        )
+        self.assertIn("--hf", cmd)
+        self.assertIn("--save-every 1", cmd)
+
+    def test_build_train_start_command_requires_hf_repo_and_run(self) -> None:
+        with self.assertRaises(ValueError):
+            build_train_start_command(
+                repository="dieg0code/ataxx-zero",
+                git_ref="main",
+                train_args="--iterations 5",
+                hf_repo_id="",
+                hf_run_id="policy_spatial_v1",
+            )
+        with self.assertRaises(ValueError):
+            build_train_start_command(
+                repository="dieg0code/ataxx-zero",
+                git_ref="main",
+                train_args="--iterations 5",
+                hf_repo_id="dieg0code/ataxx-zero",
+                hf_run_id="",
+            )
 
     def test_pod_finished_for_terminal_desired_status(self) -> None:
         self.assertTrue(pod_finished(desired_status="STOPPED", runtime_status="RUNNING"))

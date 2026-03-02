@@ -19,6 +19,10 @@ on:
         description: "RunPod cloud type"
         required: true
         default: "SECURE"
+      terminate_after:
+        description: "Hard max runtime for cost safety (RunPod duration, e.g. 8h)"
+        required: true
+        default: "8h"
       image_name:
         description: "Container image for pod"
         required: true
@@ -39,10 +43,18 @@ on:
         description: "HF namespace for this model lineage"
         required: true
         default: "policy_spatial_v1"
+      allow_when_any_pod_active:
+        description: "Set true only if you intentionally allow other active RunPod pods in the account"
+        required: true
+        default: "false"
       train_args:
         description: "Arguments passed to train.py"
         required: true
         default: "--no-onnx --quiet --devices 1 --strategy auto --num-workers 4 --keep-local-ckpts 2 --keep-log-versions 1 --hf --iterations 40 --episodes 70 --sims 600 --epochs 5 --batch-size 512 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --opp-self 0.45 --opp-heuristic 0.50 --opp-random 0.05 --opp-heu-easy 0.00 --opp-heu-normal 0.25 --opp-heu-hard 0.75 --model-swap-prob 0.5 --selfplay-workers 8 --monitor-log-every 3"
+      allow_replace_running:
+        description: "Set true only if you intentionally want to replace an active tracked pod"
+        required: true
+        default: "false"
 
 concurrency:
   group: runpod-train-start-${{ github.ref }}
@@ -79,9 +91,36 @@ jobs:
       - name: Setup Pulumi CLI
         uses: pulumi/setup-pulumi@v2
 
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
       - name: Install stack dependencies
         working-directory: infra/runpod-train
         run: pip install -r requirements.txt
+
+      - name: Verify HF token and repo access before spending GPU
+        env:
+          HF_REPO_ID_INPUT: ${{ inputs.hf_repo_id }}
+        run: |
+          python -m pip install --disable-pip-version-check --quiet huggingface_hub
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"].strip()
+          repo_id = os.environ["HF_REPO_ID_INPUT"].strip()
+          if not token:
+              raise SystemExit("HF_TOKEN is empty")
+          if not repo_id:
+              raise SystemExit("hf_repo_id input is empty")
+
+          api = HfApi(token=token)
+          who = api.whoami()
+          user_label = who.get("name") or who.get("fullname") or "unknown"
+          print(f"HF auth ok for: {user_label}")
+          api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
+          print(f"HF repo access ok: {repo_id}")
+          PY
 
       - name: Login to Pulumi Cloud
         run: pulumi login
@@ -97,6 +136,7 @@ jobs:
           pulumi config set runpod-train:podName "${{ inputs.pod_name }}"
           pulumi config set runpod-train:gpuTypeId "${{ inputs.gpu_type_id }}"
           pulumi config set runpod-train:cloudType "${{ inputs.cloud_type }}"
+          pulumi config set runpod-train:terminateAfter "${{ inputs.terminate_after }}"
           pulumi config set runpod-train:imageName "${{ inputs.image_name }}"
           pulumi config set runpod-train:repository "${{ inputs.repository }}"
           pulumi config set runpod-train:gitRef "${{ inputs.git_ref }}"
@@ -104,6 +144,84 @@ jobs:
           pulumi config set runpod-train:hfRepoId "${{ inputs.hf_repo_id }}"
           pulumi config set runpod-train:hfRunId "${{ inputs.hf_run_id }}"
           pulumi config set runpod-train:hfToken "${HF_TOKEN}" --secret
+
+      - name: Prevent launch when any RunPod pod is already active
+        env:
+          ALLOW_WHEN_ANY_POD_ACTIVE: ${{ inputs.allow_when_any_pod_active }}
+        run: |
+          response=$(curl -sS \
+            -H "Authorization: Bearer ${RUNPOD_API_TOKEN}" \
+            "https://rest.runpod.io/v1/pods")
+
+          rows=$(echo "${response}" | jq -r '
+            def pod_list:
+              if (.pods | type? == "array") then .pods
+              elif (.data | type? == "array") then .data
+              elif (.items | type? == "array") then .items
+              elif (type == "array") then .
+              else [] end;
+            pod_list[]? |
+            . as $p |
+            ($p.id // "") as $id |
+            ($p.name // $p.podName // "unnamed") as $name |
+            (($p.desiredStatus // $p.desired_status // "unknown") | ascii_upcase) as $desired |
+            (($p.runtime.status // $p.runtimeStatus // "unknown") | ascii_upcase) as $runtime |
+            [$id, $name, $desired, $runtime] | @tsv
+          ')
+
+          active_count=0
+          while IFS=$'\t' read -r pod_id pod_name desired runtime; do
+            [ -z "${pod_id}" ] && continue
+            if [[ "${desired}" == "STOPPED" || "${desired}" == "TERMINATED" || "${desired}" == "EXITED" || "${desired}" == "FAILED" || "${desired}" == "CANCELLED" || "${runtime}" == "STOPPED" || "${runtime}" == "TERMINATED" || "${runtime}" == "EXITED" || "${runtime}" == "FAILED" || "${runtime}" == "CANCELLED" ]]; then
+              continue
+            fi
+            active_count=$((active_count + 1))
+            echo "Active pod detected: id=${pod_id} name=${pod_name} desired=${desired} runtime=${runtime}"
+          done <<< "${rows}"
+
+          if [ "${active_count}" -eq 0 ]; then
+            echo "No active RunPod pods detected; safe to proceed."
+            exit 0
+          fi
+
+          if [ "${ALLOW_WHEN_ANY_POD_ACTIVE}" = "true" ]; then
+            echo "allow_when_any_pod_active=true, proceeding by explicit override."
+            exit 0
+          fi
+
+          echo "::error::Detected ${active_count} active RunPod pod(s). Aborting to avoid duplicate billing. If intentional, rerun with allow_when_any_pod_active=true."
+          exit 1
+
+      - name: Prevent duplicate spend from active tracked pod
+        working-directory: infra/runpod-train
+        env:
+          ALLOW_REPLACE_RUNNING: ${{ inputs.allow_replace_running }}
+        run: |
+          POD_ID=$(pulumi stack output podId 2>/dev/null || true)
+          if [ -z "${POD_ID}" ]; then
+            echo "No tracked pod in stack; safe to create."
+            exit 0
+          fi
+
+          response=$(curl -sS \
+            -H "Authorization: Bearer ${RUNPOD_API_TOKEN}" \
+            "https://rest.runpod.io/v1/pods/${POD_ID}")
+          desired=$(echo "${response}" | jq -r '.desiredStatus // "unknown"' | tr '[:lower:]' '[:upper:]')
+          runtime=$(echo "${response}" | jq -r '.runtime.status // "unknown"' | tr '[:lower:]' '[:upper:]')
+
+          echo "Tracked pod ${POD_ID}: desired=${desired} runtime=${runtime}"
+          if [[ "${desired}" == "STOPPED" || "${desired}" == "TERMINATED" || "${runtime}" == "EXITED" || "${runtime}" == "FAILED" ]]; then
+            echo "Tracked pod is terminal; continuing."
+            exit 0
+          fi
+
+          if [ "${ALLOW_REPLACE_RUNNING}" = "true" ]; then
+            echo "allow_replace_running=true, continuing by explicit override."
+            exit 0
+          fi
+
+          echo "::error::Tracked pod ${POD_ID} is still active. Re-run after it stops, or set allow_replace_running=true explicitly."
+          exit 1
 
       - name: Create or refresh training pod
         working-directory: infra/runpod-train

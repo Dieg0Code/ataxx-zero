@@ -82,44 +82,34 @@ jobs:
           response=$(curl -sS \
             -H "Authorization: Bearer ${RUNPOD_API_TOKEN}" \
             "https://rest.runpod.io/v1/pods/${POD_ID}")
-          desired=$(echo "${response}" | jq -r '.desiredStatus // "unknown"')
-          runtime=$(echo "${response}" | jq -r '.runtime.status // "unknown"')
+          desired=$(echo "${response}" | jq -r '.desiredStatus // "unknown"' | tr '[:lower:]' '[:upper:]')
+          runtime=$(echo "${response}" | jq -r '.runtime.status // "unknown"' | tr '[:lower:]' '[:upper:]')
+          terminal="false"
+          if [[ "${desired}" == "STOPPED" || "${desired}" == "TERMINATED" || "${desired}" == "EXITED" || "${desired}" == "FAILED" || "${desired}" == "CANCELLED" || "${runtime}" == "EXITED" || "${runtime}" == "FAILED" || "${runtime}" == "TERMINATED" || "${runtime}" == "STOPPED" ]]; then
+            terminal="true"
+          fi
           echo "desired=${desired}" >> "$GITHUB_OUTPUT"
           echo "runtime=${runtime}" >> "$GITHUB_OUTPUT"
-          echo "desiredStatus=${desired} runtime.status=${runtime}"
+          echo "terminal=${terminal}" >> "$GITHUB_OUTPUT"
+          echo "desiredStatus=${desired} runtime.status=${runtime} terminal=${terminal}"
 
       - name: Destroy terminal pod
         if: >
           steps.pod.outputs.pod_id != '' &&
-          (
-            steps.status.outputs.desired == 'STOPPED' ||
-            steps.status.outputs.desired == 'TERMINATED' ||
-            steps.status.outputs.runtime == 'EXITED' ||
-            steps.status.outputs.runtime == 'FAILED'
-          )
+          steps.status.outputs.terminal == 'true'
         working-directory: infra/runpod-train
         run: pulumi destroy --yes --skip-preview
 
       - name: Remove stack after destroy
         if: >
           steps.pod.outputs.pod_id != '' &&
-          (
-            steps.status.outputs.desired == 'STOPPED' ||
-            steps.status.outputs.desired == 'TERMINATED' ||
-            steps.status.outputs.runtime == 'EXITED' ||
-            steps.status.outputs.runtime == 'FAILED'
-          )
+          steps.status.outputs.terminal == 'true'
         working-directory: infra/runpod-train
         run: pulumi stack rm "${STACK_NAME}" --yes
 
       - name: Keep running pod
         if: >
           steps.pod.outputs.pod_id != '' &&
-          !(
-            steps.status.outputs.desired == 'STOPPED' ||
-            steps.status.outputs.desired == 'TERMINATED' ||
-            steps.status.outputs.runtime == 'EXITED' ||
-            steps.status.outputs.runtime == 'FAILED'
-          )
+          steps.status.outputs.terminal != 'true'
         run: |
           echo "Pod still running. Reconcile will check again on next run."
