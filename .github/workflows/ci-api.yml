@@ -64,8 +64,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync dependencies (api + dev + train + export)
-        run: uv sync --frozen --group api --group dev --group train --group export
+      - name: Sync dependencies (all groups for full-project pyrefly)
+        run: uv sync --frozen --all-groups
 
       - name: Compatibility shim for pyrefly interpreter path
         run: |

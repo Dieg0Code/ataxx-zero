@@ -50,6 +50,9 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Validate Railway auth token
+        run: railway whoami --json
+
       - name: Deploy to Railway (CI mode)
         run: |
           railway up \
