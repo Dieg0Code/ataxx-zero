@@ -25,6 +25,7 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
 # Runtime deps only (project + api group).
 RUN uv sync --frozen --no-dev --group api
 

@@ -496,6 +496,5 @@ def main() -> None:
                     log("A queued HF upload failed.")
             hf_upload_executor.shutdown(wait=True)
 
-
 if __name__ == "__main__":
     main()
