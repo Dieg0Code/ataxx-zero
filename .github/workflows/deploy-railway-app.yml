@@ -26,7 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Railway CLI expects account/workspace tokens in RAILWAY_API_TOKEN.
+      # Keep both names because Railway CLI behavior varies across versions.
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
       RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
@@ -35,7 +36,7 @@ jobs:
     steps:
       - name: Validate Railway secrets
         run: |
-          test -n "${RAILWAY_API_TOKEN}" || (echo "Missing secret: RAILWAY_TOKEN" && exit 1)
+          test -n "${RAILWAY_TOKEN}" || (echo "Missing secret: RAILWAY_TOKEN" && exit 1)
           test -n "${RAILWAY_PROJECT_ID}" || (echo "Missing secret: RAILWAY_PROJECT_ID" && exit 1)
           test -n "${RAILWAY_ENVIRONMENT_ID}" || (echo "Missing secret: RAILWAY_ENVIRONMENT_ID" && exit 1)
           test -n "${RAILWAY_SERVICE_ID}" || (echo "Missing secret: RAILWAY_SERVICE_ID" && exit 1)
@@ -59,8 +60,22 @@ jobs:
 
       - name: Deploy to Railway (CI mode)
         run: |
-          railway up \
-            --ci \
-            --project "${RAILWAY_PROJECT_ID}" \
-            --environment "${RAILWAY_ENVIRONMENT_ID}" \
-            --service "${RAILWAY_SERVICE_ID}"
+          # Railway builder failures can be transient (container bootstrap/network).
+          # Retry the deploy to reduce false-negative workflow failures.
+          for attempt in 1 2 3; do
+            echo "Railway deploy attempt ${attempt}/3"
+            if railway up \
+              --ci \
+              --project "${RAILWAY_PROJECT_ID}" \
+              --environment "${RAILWAY_ENVIRONMENT_ID}" \
+              --service "${RAILWAY_SERVICE_ID}"; then
+              echo "Railway deploy succeeded."
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "Deploy attempt ${attempt} failed. Retrying in 20s..."
+              sleep 20
+            fi
+          done
+          echo "Railway deploy failed after 3 attempts."
+          exit 1
