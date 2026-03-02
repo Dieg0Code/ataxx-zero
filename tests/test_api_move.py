@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -99,6 +100,27 @@ class TestApiMove(unittest.TestCase):
 
         body = response.json()
         self.assertEqual(body["mode"], "heuristic_normal")
+        self.assertIsInstance(body["action_idx"], int)
+
+    def test_move_endpoint_falls_back_to_heuristic_when_inference_is_unavailable(self) -> None:
+        app = create_app()
+
+        def _unavailable_inference() -> _StubInferenceService:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Inference unavailable in test",
+            )
+
+        app.dependency_overrides[get_inference_service_dep] = _unavailable_inference
+        client = TestClient(app)
+
+        board = AtaxxBoard()
+        payload = MoveRequest(board=board_to_state(board), mode="fast").model_dump()
+        response = client.post("/api/v1/gameplay/move", json=payload)
+        self.assertEqual(response.status_code, 200)
+
+        body = response.json()
+        self.assertEqual(body["mode"], "heuristic_hard")
         self.assertIsInstance(body["action_idx"], int)
 
 

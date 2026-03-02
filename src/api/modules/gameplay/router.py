@@ -137,19 +137,44 @@ def post_move(
 
     mode = request.mode
     if mode in {"fast", "strong"}:
-        inference_service = _resolve_inference_service(http_request)
-        result = inference_service.predict(board=board, mode=mode)
-        move_payload: MovePayload | None = None
-        if result.move is not None:
-            r1, c1, r2, c2 = result.move
-            move_payload = MovePayload(r1=r1, c1=c1, r2=r2, c2=c2)
+        try:
+            inference_service = _resolve_inference_service(http_request)
+            result = inference_service.predict(board=board, mode=mode)
+            move_payload: MovePayload | None = None
+            if result.move is not None:
+                r1, c1, r2, c2 = result.move
+                move_payload = MovePayload(r1=r1, c1=c1, r2=r2, c2=c2)
 
-        return MoveResponse(
-            move=move_payload,
-            action_idx=result.action_idx,
-            value=result.value,
-            mode=result.mode,
-        )
+            return MoveResponse(
+                move=move_payload,
+                action_idx=result.action_idx,
+                value=result.value,
+                mode=result.mode,
+            )
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                raise
+            # Keep PvE matches playable when model artifacts are missing in runtime.
+            logger.warning(
+                "Inference unavailable on /gameplay/move; falling back to heuristic_hard",
+                extra={"detail": exc.detail},
+            )
+            rng = np.random.default_rng()
+            fallback_move = heuristic_move(board=board, rng=rng, level="hard")
+            if fallback_move is None:
+                return MoveResponse(
+                    move=None,
+                    action_idx=ACTION_SPACE.pass_index,
+                    value=0.0,
+                    mode="heuristic_hard",
+                )
+            r1, c1, r2, c2 = fallback_move
+            return MoveResponse(
+                move=MovePayload(r1=r1, c1=c1, r2=r2, c2=c2),
+                action_idx=ACTION_SPACE.encode(fallback_move),
+                value=0.0,
+                mode="heuristic_hard",
+            )
 
     rng = np.random.default_rng()
     if mode == "random":
