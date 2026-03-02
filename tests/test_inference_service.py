@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
+from inference.legacy_model import LegacyAtaxxSystem
 from inference.service import InferenceService
 from model.system import AtaxxZero
 
@@ -120,6 +121,37 @@ class TestInferenceService(unittest.TestCase):
     def test_rejects_missing_checkpoint(self) -> None:
         with self.assertRaises(FileNotFoundError):
             InferenceService(checkpoint_path="does/not/exist/model.pt", device="cpu")
+
+    def test_loads_legacy_checkpoint_and_predicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            legacy = LegacyAtaxxSystem(
+                d_model=64,
+                nhead=8,
+                num_layers=2,
+                dim_feedforward=128,
+                dropout=0.0,
+            )
+            ckpt_path = Path(tmp_dir) / "legacy.pt"
+            torch.save({"state_dict": legacy.state_dict()}, ckpt_path)
+
+            service = InferenceService(
+                checkpoint_path=ckpt_path,
+                device="cpu",
+                model_kwargs={
+                    "d_model": 64,
+                    "nhead": 8,
+                    "num_layers": 2,
+                    "dim_feedforward": 128,
+                    "dropout": 0.0,
+                },
+            )
+            board = AtaxxBoard()
+            result = service.predict(board, mode="strong")
+
+            legal_moves = board.get_valid_moves()
+            legal_idxs = {ACTION_SPACE.encode(mv) for mv in legal_moves}
+            self.assertEqual(result.mode, "fast")
+            self.assertIn(result.action_idx, legal_idxs)
 
     def test_rejects_invalid_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

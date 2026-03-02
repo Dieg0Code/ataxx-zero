@@ -15,7 +15,6 @@ from game.types import Move
 
 if TYPE_CHECKING:
     from engine.mcts import MCTS
-    from model.system import AtaxxZero
 
 InferenceMode = Literal["fast", "strong"]
 
@@ -57,6 +56,19 @@ class _OnnxSessionLike(Protocol):
         ...
 
 
+class _SystemLike(Protocol):
+    model: Any
+
+    def eval(self) -> _SystemLike:
+        ...
+
+    def to(self, device: str) -> _SystemLike:
+        ...
+
+    def load_state_dict(self, state_dict: dict[str, object]) -> object:
+        ...
+
+
 @lru_cache(maxsize=1)
 def _get_torch_module() -> ModuleType | None:
     """Import torch lazily so API startup does not hard-fail in lightweight runtimes."""
@@ -95,11 +107,15 @@ class InferenceService:
         self.c_puct = float(c_puct)
         self.model_kwargs: ModelInitKwargs = model_kwargs or {}
 
-        self.system: AtaxxZero | None = None
+        self.system: _SystemLike | None = None
+        self._model_input_channels = 4
         if self.checkpoint_path.exists():
             self.system = self._load_system()
             self.system.eval()
             self.system.to(self.device)
+            self._model_input_channels = int(
+                getattr(self.system.model, "num_input_channels", 4)
+            )
 
         self._onnx_session: _OnnxSessionLike | None = None
         self._onnx_last_error: str | None = None
@@ -132,7 +148,29 @@ class InferenceService:
             )
         return torch_module
 
-    def _load_system(self) -> AtaxxZero:
+    @staticmethod
+    def _is_legacy_state_dict(state_dict: dict[str, Any]) -> bool:
+        has_legacy_policy = "model.policy_head.1.weight" in state_dict
+        has_spatial_policy = "model.policy_src_proj.weight" in state_dict
+        input_weight = state_dict.get("model.input_proj.weight")
+        input_channels = None
+        if hasattr(input_weight, "shape"):
+            shape = tuple(input_weight.shape)
+            if len(shape) == 2:
+                input_channels = int(shape[1])
+        return has_legacy_policy and not has_spatial_policy and input_channels == 3
+
+    @staticmethod
+    def _extract_arch_kwargs(raw_kwargs: ModelInitKwargs) -> dict[str, Any]:
+        allowed = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout")
+        return {key: raw_kwargs[key] for key in allowed if key in raw_kwargs}
+
+    def _build_legacy_system(self) -> _SystemLike:
+        from inference.legacy_model import LegacyAtaxxSystem
+
+        return LegacyAtaxxSystem(**self._extract_arch_kwargs(self.model_kwargs))
+
+    def _load_system(self) -> _SystemLike:
         from model.system import AtaxxZero
 
         torch_module = self._require_torch()
@@ -157,6 +195,16 @@ class InferenceService:
         try:
             system.load_state_dict(state_dict_obj)
         except RuntimeError as exc:
+            if self._is_legacy_state_dict(state_dict_obj):
+                legacy_system = self._build_legacy_system()
+                try:
+                    legacy_system.load_state_dict(state_dict_obj)
+                    return legacy_system
+                except RuntimeError as legacy_exc:
+                    raise ValueError(
+                        "Checkpoint incompatible con architecture policy_head espacial; "
+                        "reentrena o usa carga parcial manual (strict=False)."
+                    ) from legacy_exc
             raise ValueError(
                 "Checkpoint incompatible con architecture policy_head espacial; "
                 "reentrena o usa carga parcial manual (strict=False)."
@@ -270,6 +318,8 @@ class InferenceService:
         torch_module = self._require_torch()
         mask_np = self._legal_action_mask(board)
         obs = board.get_observation()
+        if obs.shape[0] != self._model_input_channels:
+            obs = obs[: self._model_input_channels]
 
         obs_tensor = torch_module.from_numpy(obs).unsqueeze(0).to(self.device)
         mask_tensor = torch_module.from_numpy(mask_np).unsqueeze(0).to(self.device)
@@ -302,6 +352,10 @@ class InferenceService:
         if self.system is None:
             # If no torch model is available, degrade gracefully to fast ONNX/Torch.
             return self._fast_result(board)
+        if self._model_input_channels != 4:
+            # Legacy checkpoints were trained with 3-channel observations and do
+            # not support the current MCTS path that batches 4-channel states.
+            return self._fast_result(board)
         torch_module = self._require_torch()
         mcts = self._ensure_mcts()
         probs = mcts.run(board=board, add_dirichlet_noise=False, temperature=0.0)
@@ -311,6 +365,8 @@ class InferenceService:
         # Value still comes from raw net (current-player perspective), which is stable and cheap.
         mask_np = self._legal_action_mask(board)
         obs = board.get_observation()
+        if obs.shape[0] != self._model_input_channels:
+            obs = obs[: self._model_input_channels]
         obs_tensor = torch_module.from_numpy(obs).unsqueeze(0).to(self.device)
         mask_tensor = torch_module.from_numpy(mask_np).unsqueeze(0).to(self.device)
         with torch_module.no_grad():
