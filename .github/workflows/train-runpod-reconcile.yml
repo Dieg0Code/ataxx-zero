@@ -55,7 +55,7 @@ jobs:
 
       - name: Select stack
         working-directory: infra/runpod-train
-        run: pulumi stack select "${STACK_NAME}"
+        run: pulumi stack select "${STACK_NAME}" --create
 
       - name: Ensure provider token exists
         working-directory: infra/runpod-train
