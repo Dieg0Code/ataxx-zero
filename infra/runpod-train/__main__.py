@@ -67,5 +67,6 @@ trainer = runpod.Pod(
     env=env,
 )
 
-pulumi.export("podId", trainer.id)
+# Export the provider pod UUID (not the Pulumi resource name) for reconcile/status checks.
+pulumi.export("podId", trainer.pod.apply(lambda pod: str(pod.id)))
 pulumi.export("podName", trainer.name)
