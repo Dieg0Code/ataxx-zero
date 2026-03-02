@@ -5,15 +5,17 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 import numpy as np
 
-from engine.mcts import MCTS
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
 from game.types import Move
 from model.system import AtaxxZero
+
+if TYPE_CHECKING:
+    from engine.mcts import MCTS
 
 InferenceMode = Literal["fast", "strong"]
 
@@ -182,6 +184,8 @@ class InferenceService:
         return ort.InferenceSession(str(onnx_path), providers=providers)
 
     def _ensure_mcts(self) -> MCTS:
+        from engine.mcts import MCTS
+
         if self.system is None:
             raise ValueError("Strong mode requires a torch checkpoint.")
         if self._mcts is None:
