@@ -10,7 +10,7 @@ COPY web/ ./
 RUN npm run build -- --base=/web/static/
 
 
-FROM python:3.10-slim AS py-builder
+FROM python:3.11-slim AS py-builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -29,7 +29,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --group api
 
 
-FROM python:3.10-slim AS runtime
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

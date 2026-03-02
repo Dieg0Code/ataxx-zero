@@ -48,12 +48,10 @@ if TYPE_CHECKING:
     from game.board import AtaxxBoard
     from game.types import Move
     from model.system import AtaxxZero
+    from ui.arena.effects import Particle
 
 PLAYER_1 = 1
 PLAYER_2 = -1
-
-Particle = dict[str, float | tuple[int, int, int]]
-
 
 def _ensure_src_on_path() -> None:
     if str(_SRC) not in sys.path:
@@ -621,10 +619,11 @@ def main() -> None:
 
         if ai_turn and pending_apply_at is None:
             player = board.current_player
-            if ai_ready_at[player] is None:
+            ready_at = ai_ready_at[player]
+            if ready_at is None:
                 ai_ready_at[player] = now_ms + _ai_delay_ms(board, turn_agent, args.mcts_sims, rng)
                 status = f"{turn_agent} thinking..."
-            elif now_ms >= int(ai_ready_at[player]):
+            elif now_ms >= ready_at:
                 move, move_text = _pick_ai_move(
                     board=board,
                     agent=turn_agent,

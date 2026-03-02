@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from training.runpod_infra import build_pod_env, build_train_start_command
+from training.runpod_infra import build_pod_env, build_train_start_command  # noqa: E402
 
 cfg = pulumi.Config()
 

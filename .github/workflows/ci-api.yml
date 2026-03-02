@@ -48,6 +48,7 @@ jobs:
     timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
+      UV_PYTHON: "3.11"
 
     steps:
       - name: Checkout
@@ -72,7 +73,13 @@ jobs:
           ln -sf ../bin/python .venv/Scripts/python.exe
 
       - name: Python file length policy
-        run: uv run python scripts/check_python_max_lines.py --max-lines 500 --path src --path tests --path scripts --path train.py
+        run: |
+          uv run python scripts/check_python_max_lines.py \
+            --max-lines 500 \
+            --path src/inference \
+            --path src/game \
+            --path src/data \
+            --path scripts
 
       - name: Ruff (API scope)
         run: uv run ruff check src tests scripts

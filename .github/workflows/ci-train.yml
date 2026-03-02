@@ -46,6 +46,7 @@ jobs:
     timeout-minutes: 35
     env:
       PYTHONUNBUFFERED: "1"
+      UV_PYTHON: "3.11"
 
     steps:
       - name: Checkout
@@ -80,8 +81,11 @@ jobs:
             --path src/game \
             --path src/data \
             --path tests/test_mcts_numerics.py \
+            --path tests/test_training_bootstrap.py \
+            --path tests/test_training_checkpointing.py \
+            --path tests/test_training_curriculum.py \
+            --path tests/test_training_monitor.py \
             --path tests/test_training_step_numerics.py \
-            --path tests/test_training_*.py \
             --path scripts/export_model_onnx.py \
             --path scripts/check_onnx_parity.py
 

@@ -23,6 +23,7 @@ where = ["src"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+extend-exclude = ["*.ipynb"]
 
 [tool.repo_policy]
 max_python_file_lines = 500

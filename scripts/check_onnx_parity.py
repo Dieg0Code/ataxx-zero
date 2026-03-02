@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,7 +63,7 @@ def main() -> None:
     _ensure_src_on_path()
 
     try:
-        import onnxruntime as ort
+        ort = importlib.import_module("onnxruntime")
     except ImportError as exc:
         raise RuntimeError(
             "onnxruntime is required for parity checks. Install with `uv add --group dev onnxruntime`."

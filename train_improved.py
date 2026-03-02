@@ -1,4 +1,2 @@
 if __name__ == "__main__":
-    import train
-
-    train.main()
+    __import__("train").main()

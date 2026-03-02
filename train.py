@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
@@ -32,6 +31,7 @@ from training.checkpointing import (  # noqa: E402
 )
 from training.config_runtime import (  # noqa: E402
     CONFIG,
+    TrainerPrecision,
     apply_cli_overrides,
     cfg_bool,
     cfg_float,
@@ -64,17 +64,23 @@ def _build_train_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object]
         reference_buffer=False,
         val_split=cfg_float("val_split"),
     )
-    loader_kwargs: dict[str, object] = {}
     if cfg_int("num_workers") > 0:
-        loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(
+            dataset,
+            batch_size=cfg_int("batch_size"),
+            shuffle=True,
+            num_workers=cfg_int("num_workers"),
+            persistent_workers=True,
+            pin_memory=(device == "cuda"),
+            prefetch_factor=2,
+        )
     return DataLoader(
         dataset,
         batch_size=cfg_int("batch_size"),
         shuffle=True,
-        num_workers=cfg_int("num_workers"),
-        persistent_workers=(cfg_bool("persistent_workers") and cfg_int("num_workers") > 0),
+        num_workers=0,
+        persistent_workers=False,
         pin_memory=(device == "cuda"),
-        **loader_kwargs,
     )
 
 
@@ -84,17 +90,23 @@ def _build_val_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object] |
     val_dataset = ValidationDataset(buffer=buffer, split=cfg_float("val_split"))
     if len(val_dataset) == 0:
         return None
-    loader_kwargs: dict[str, object] = {}
     if cfg_int("num_workers") > 0:
-        loader_kwargs["prefetch_factor"] = 2
+        return DataLoader(
+            val_dataset,
+            batch_size=cfg_int("batch_size"),
+            shuffle=False,
+            num_workers=cfg_int("num_workers"),
+            persistent_workers=True,
+            pin_memory=(device == "cuda"),
+            prefetch_factor=2,
+        )
     return DataLoader(
         val_dataset,
         batch_size=cfg_int("batch_size"),
         shuffle=False,
-        num_workers=cfg_int("num_workers"),
-        persistent_workers=(cfg_bool("persistent_workers") and cfg_int("num_workers") > 0),
+        num_workers=0,
+        persistent_workers=False,
         pin_memory=(device == "cuda"),
-        **loader_kwargs,
     )
 
 
@@ -107,13 +119,13 @@ def _fit_with_ddp_fallback(
     trainer_accelerator: str,
     trainer_devices: int,
     trainer_strategy: str,
-    trainer_precision: str,
+    trainer_precision: TrainerPrecision,
     checkpoint_callback: ModelCheckpoint,
     lr_monitor: LearningRateMonitor,
     logger: TensorBoardLogger,
     optimizer_transfer: OptimizerStateTransfer,
     epoch_pulse: EpochPulseCallback,
-) -> tuple[pl.Trainer, str, int, str, str]:
+) -> tuple[pl.Trainer, str, int, str, TrainerPrecision]:
     trainer = build_trainer(
         epochs=epochs,
         accelerator=trainer_accelerator,
@@ -178,7 +190,7 @@ def _run_warmup_if_needed(
     trainer_accelerator: str,
     trainer_devices: int,
     trainer_strategy: str,
-    trainer_precision: str,
+    trainer_precision: TrainerPrecision,
     checkpoint_callback: ModelCheckpoint,
     lr_monitor: LearningRateMonitor,
     logger: TensorBoardLogger,
@@ -197,7 +209,7 @@ def _run_warmup_if_needed(
     rng_seed = int(torch.randint(0, 2**31, (1,), generator=warmup_rng).item())
     warmup_examples = generate_imitation_data(
         n_games=warmup_games,
-        rng=np.random.default_rng(seed=rng_seed),
+        seed=rng_seed,
         heuristic_level="hard",
     )
     buffer.save_game(warmup_examples)
@@ -267,7 +279,7 @@ def main() -> None:
     )
     if device == "cuda" and cfg_bool("compile_model"):
         try:
-            system.model = torch.compile(system.model, mode="reduce-overhead")
+            system.model = cast(Any, torch.compile(system.model, mode="reduce-overhead"))
             log("Model compile enabled: torch.compile(mode='reduce-overhead').")
         except Exception as exc:
             log(f"Model compile skipped due to runtime error: {exc}")
@@ -275,7 +287,7 @@ def main() -> None:
 
     hf_checkpointer = init_hf_checkpointer()
     hf_upload_executor: ThreadPoolExecutor | None = None
-    hf_upload_futures: list[object] = []
+    hf_upload_futures: list[Future[None]] = []
     if hf_checkpointer is not None:
         hf_upload_executor = ThreadPoolExecutor(max_workers=1)
         try:
