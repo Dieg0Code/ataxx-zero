@@ -15,6 +15,7 @@ import {
 import { useAuth } from "@/app/providers/useAuth";
 import { InvitationList } from "@/features/matches/InvitationList";
 import { useInvitations } from "@/features/matches/useInvitations";
+import { assetUrl } from "@/shared/lib/assets";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/utils";
@@ -25,7 +26,7 @@ const NAV_ITEMS = [
   { to: "/profile", label: "Perfil", icon: UserIcon },
 ];
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
-const INVITE_SFX_PATH = "/sfx/queue_found.ogg";
+const INVITE_SFX_PATH = assetUrl("sfx/queue_found.ogg");
 
 type FlashTone = "success" | "warning" | "error" | "info";
 

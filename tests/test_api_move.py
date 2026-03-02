@@ -83,6 +83,24 @@ class TestApiMove(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Invalid board payload", response.json()["detail"])
 
+    def test_move_endpoint_supports_heuristic_without_inference_service(self) -> None:
+        app = create_app()
+
+        def _unavailable_inference() -> _StubInferenceService:
+            raise AssertionError("Inference dependency should not be resolved for heuristic modes.")
+
+        app.dependency_overrides[get_inference_service_dep] = _unavailable_inference
+        client = TestClient(app)
+
+        board = AtaxxBoard()
+        payload = MoveRequest(board=board_to_state(board), mode="heuristic_normal").model_dump()
+        response = client.post("/api/v1/gameplay/move", json=payload)
+        self.assertEqual(response.status_code, 200)
+
+        body = response.json()
+        self.assertEqual(body["mode"], "heuristic_normal")
+        self.assertIsInstance(body["action_idx"], int)
+
 
 if __name__ == "__main__":
     unittest.main()

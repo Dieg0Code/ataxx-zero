@@ -17,6 +17,7 @@ import { fetchPersistedGameSummary } from "@/features/match/persistence";
 import { fetchPublicPlayers } from "@/features/identity/api";
 import { AppShell } from "@/widgets/layout/AppShell";
 import { fetchActiveSeason, fetchLeaderboard } from "@/features/ranking/api";
+import { assetUrl } from "@/shared/lib/assets";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
@@ -35,10 +36,10 @@ const GUEST_BOT_FALLBACK = [
   "neonwarden",
 ] as const;
 const QUEUE_SFX = {
-  search: "/sfx/start.ogg",
-  found: "/sfx/queue_found.ogg",
-  accept: "/sfx/queue_accept.ogg",
-  reject: "/sfx/queue_reject.ogg",
+  search: assetUrl("sfx/start.ogg"),
+  found: assetUrl("sfx/queue_found.ogg"),
+  accept: assetUrl("sfx/queue_accept.ogg"),
+  reject: assetUrl("sfx/queue_reject.ogg"),
 } as const;
 
 type QueueMatch = {

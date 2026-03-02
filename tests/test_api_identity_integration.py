@@ -147,6 +147,55 @@ class TestApiIdentityIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertIn("User not found", resp.json()["detail"])
 
+    def test_admin_can_upsert_model_bot_profile(self) -> None:
+        admin = self._register_and_login("id-admin3", "id-admin3@example.com")
+        self._promote_user_to_admin(admin["user_id"])
+        target = self._register_and_login("id-bogo", "id-bogo@example.com")
+
+        model_version_resp = self.client.post(
+            "/api/v1/model-versions",
+            json={
+                "name": "ub_bogonet_v0",
+                "checkpoint_uri": "checkpoints/bogonet_v0.ckpt",
+                "is_active": False,
+            },
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(model_version_resp.status_code, 201)
+        model_version_id = model_version_resp.json()["id"]
+
+        upsert = self.client.post(
+            "/api/v1/identity/bot-profiles",
+            json={
+                "user_id": target["user_id"],
+                "agent_type": "model",
+                "model_mode": "fast",
+                "model_version_id": model_version_id,
+                "enabled": True,
+            },
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(upsert.status_code, 201)
+        payload = upsert.json()
+        self.assertEqual(payload["user_id"], target["user_id"])
+        self.assertEqual(payload["agent_type"], "model")
+        self.assertEqual(payload["model_mode"], "fast")
+        self.assertEqual(payload["model_version_id"], model_version_id)
+        self.assertTrue(payload["enabled"])
+
+        bots_resp = self.client.get(
+            "/api/v1/identity/bots?limit=20&offset=0",
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(bots_resp.status_code, 200)
+        items = bots_resp.json()["items"]
+        bot_row = next((item for item in items if item["user_id"] == target["user_id"]), None)
+        self.assertIsNotNone(bot_row)
+        if bot_row is None:
+            self.fail("Bot row not found in playable bot list")
+        self.assertEqual(bot_row["agent_type"], "model")
+        self.assertEqual(bot_row["model_version_id"], model_version_id)
+
     def _register_and_login(self, username: str, email: str) -> dict[str, str]:
         register = self.client.post(
             "/api/v1/auth/register",

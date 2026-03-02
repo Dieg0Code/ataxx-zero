@@ -51,6 +51,7 @@ import {
   normalizeForcedPasses,
   opponent,
 } from "@/features/match/rules";
+import { assetUrl } from "@/shared/lib/assets";
 import type { BoardState, Cell, Move } from "@/features/match/types";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -72,15 +73,15 @@ const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
 const MATCHMAKING_AUTOQUEUE_KEY = "ataxx.matchmaking.autoqueue.v1";
 const GUEST_PROFILE_KEY = "ataxx.guest.profile.v1";
 const SFX = {
-  uiClick: "/sfx/ui_click.ogg",
-  uiHover: "/sfx/start.ogg",
-  start: "/sfx/start.ogg",
-  moveLand: "/sfx/move_preview.ogg",
-  infect: "/sfx/infect.ogg",
-  win: "/sfx/win.ogg",
-  lose: "/sfx/lose.ogg",
-  resultReveal: "/sfx/move_preview.ogg",
-  queueDeploy: "/sfx/queue_accept.ogg",
+  uiClick: assetUrl("sfx/ui_click.ogg"),
+  uiHover: assetUrl("sfx/start.ogg"),
+  start: assetUrl("sfx/start.ogg"),
+  moveLand: assetUrl("sfx/move_preview.ogg"),
+  infect: assetUrl("sfx/infect.ogg"),
+  win: assetUrl("sfx/win.ogg"),
+  lose: assetUrl("sfx/lose.ogg"),
+  resultReveal: assetUrl("sfx/move_preview.ogg"),
+  queueDeploy: assetUrl("sfx/queue_accept.ogg"),
 } as const;
 
 const panelSectionVariants: Variants = {

@@ -16,6 +16,7 @@ from api.db.enums import (
     WinnerSide,
 )
 from api.db.models import BotProfile, Game, GameMove, User
+from api.modules.matches.model_runtime import resolve_model_inference_service
 from api.modules.matches.repository import MatchesRepository
 from api.modules.matches.schemas import MatchCreateRequest, MatchMoveRequest
 from api.modules.ranking.service import RankingService
@@ -323,12 +324,15 @@ class MatchesService:
             )
             value = 0.0
         elif profile.agent_type == AgentType.MODEL:
-            if inference_service is None:
-                raise RuntimeError("Inference service is required for model bots.")
             model_mode = profile.model_mode or "fast"
             if model_mode not in {"fast", "strong"}:
                 raise ValueError("Invalid model_mode for bot profile.")
-            prediction = inference_service.predict(board=board, mode=model_mode)
+            selected_inference_service = await self._resolve_model_bot_inference_service(
+                game=game,
+                bot_user=bot_user,
+                fallback_service=inference_service,
+            )
+            prediction = selected_inference_service.predict(board=board, mode=model_mode)
             selected_move = prediction.move
             mode = prediction.mode
             action_idx = prediction.action_idx
@@ -432,6 +436,37 @@ class MatchesService:
         if profile.agent_type not in {AgentType.HEURISTIC, AgentType.MODEL}:
             raise ValueError("Bot profile agent_type must be heuristic or model.")
         return profile
+
+    async def _resolve_model_bot_inference_service(
+        self,
+        *,
+        game: Game,
+        bot_user: User,
+        fallback_service: InferenceService | None,
+    ) -> InferenceService:
+        version_id = bot_user.model_version_id or game.model_version_id
+        if version_id is None:
+            if fallback_service is None:
+                raise RuntimeError("Inference service is required for model bots.")
+            return fallback_service
+
+        version = await self.repository.get_model_version(version_id)
+        if version is None:
+            raise RuntimeError(f"Model version not found for bot account: {version_id}")
+
+        try:
+            return resolve_model_inference_service(
+                version=version,
+                base_service=fallback_service,
+            )
+        except (FileNotFoundError, ValueError):
+            # Backward-compat: if no local artifact is configured yet, keep the
+            # current global model so existing model bots don't hard-fail.
+            if fallback_service is not None:
+                return fallback_service
+            raise RuntimeError(
+                f"Model version '{version.name}' has no usable local artifact for inference."
+            ) from None
 
 
 

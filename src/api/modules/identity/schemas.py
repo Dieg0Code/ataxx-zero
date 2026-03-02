@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,6 +112,7 @@ class BotProfileResponse(BaseModel):
                 "agent_type": "heuristic",
                 "heuristic_level": "normal",
                 "model_mode": None,
+                "model_version_id": None,
                 "enabled": True,
             }
         }
@@ -122,7 +124,29 @@ class BotProfileResponse(BaseModel):
     agent_type: str
     heuristic_level: str | None
     model_mode: str | None
+    model_version_id: UUID | None
     enabled: bool
+
+
+class BotProfileUpsertRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "5f6e8d34-292d-434f-a8ff-f48f4f3040f9",
+                "agent_type": "model",
+                "model_mode": "fast",
+                "model_version_id": "1932ac4a-5dcf-4dc9-8f99-fdf7ef20cc99",
+                "enabled": True,
+            }
+        }
+    )
+
+    user_id: UUID
+    agent_type: Literal["heuristic", "model"]
+    heuristic_level: Literal["easy", "normal", "hard"] | None = None
+    model_mode: Literal["fast", "strong"] | None = None
+    model_version_id: UUID | None = None
+    enabled: bool = True
 
 
 class BotProfileListResponse(BaseModel):
@@ -156,6 +180,7 @@ class PublicPlayerResponse(BaseModel):
                 "agent_type": "heuristic",
                 "heuristic_level": "hard",
                 "model_mode": None,
+                "model_version_id": None,
                 "enabled": True,
             }
         }
@@ -168,6 +193,7 @@ class PublicPlayerResponse(BaseModel):
     agent_type: str | None
     heuristic_level: str | None
     model_mode: str | None
+    model_version_id: UUID | None
     enabled: bool | None
 
 

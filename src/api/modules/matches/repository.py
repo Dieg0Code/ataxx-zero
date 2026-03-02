@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
 from api.db.enums import AgentType, GameStatus, QueueType
-from api.db.models import BotProfile, Game, GameMove, User
+from api.db.models import BotProfile, Game, GameMove, ModelVersion, User
 
 
 class MatchesRepository:
@@ -25,6 +25,9 @@ class MatchesRepository:
 
     async def get_user(self, user_id: UUID) -> User | None:
         return await self.session.get(User, user_id)
+
+    async def get_model_version(self, version_id: UUID) -> ModelVersion | None:
+        return await self.session.get(ModelVersion, version_id)
 
     async def get_bot_profile(self, user_id: UUID) -> BotProfile | None:
         stmt = select(BotProfile).where(BotProfile.user_id == user_id)

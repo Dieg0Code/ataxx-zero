@@ -9,6 +9,8 @@ from api.deps.auth import get_admin_user_dep, get_current_user_dep
 from api.deps.identity import get_identity_service_dep
 from api.modules.identity.schemas import (
     BotProfileListResponse,
+    BotProfileResponse,
+    BotProfileUpsertRequest,
     PublicPlayerListResponse,
     UserCreateRequest,
     UserListResponse,
@@ -49,6 +51,34 @@ async def post_user(
             detail=str(exc),
         ) from exc
     return UserResponse.model_validate(user)
+
+
+@router.post(
+    "/bot-profiles",
+    response_model=BotProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create/Update Bot Profile (Admin)",
+    description="Upserts bot behavior for a user account (heuristic/model). Requires admin privileges.",
+    responses={
+        201: {"description": "Bot profile stored successfully."},
+        401: {"description": "Missing or invalid access token."},
+        403: {"description": "Admin privileges required."},
+        404: {"description": "User not found."},
+    },
+)
+async def post_bot_profile(
+    request: BotProfileUpsertRequest,
+    identity_service: IdentityService = IDENTITY_SERVICE_DEP,
+    admin_user: User = ADMIN_USER_DEP,
+) -> BotProfileResponse:
+    del admin_user
+    try:
+        return await identity_service.upsert_bot_profile(request)
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

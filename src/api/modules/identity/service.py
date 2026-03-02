@@ -5,10 +5,12 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 
-from api.db.models import User
+from api.db.enums import AgentType, BotKind
+from api.db.models import BotProfile, User
 from api.modules.identity.repository import UserRepository
 from api.modules.identity.schemas import (
     BotProfileResponse,
+    BotProfileUpsertRequest,
     PublicPlayerResponse,
     UserCreateRequest,
 )
@@ -68,11 +70,53 @@ class IdentityService:
                 agent_type=profile.agent_type.value,
                 heuristic_level=profile.heuristic_level,
                 model_mode=profile.model_mode,
+                model_version_id=user.model_version_id,
                 enabled=profile.enabled,
             )
             for user, profile in rows
         ]
         return total, items
+
+    async def upsert_bot_profile(self, payload: BotProfileUpsertRequest) -> BotProfileResponse:
+        user = await self.user_repository.get_by_id(payload.user_id)
+        if user is None:
+            raise LookupError(f"User not found: {payload.user_id}")
+
+        profile = await self.user_repository.get_bot_profile(payload.user_id)
+        if profile is None:
+            profile = BotProfile(user_id=payload.user_id, agent_type=AgentType.HEURISTIC)
+
+        # Promote the account into bot mode so matchmaking/listing sees it.
+        user.is_bot = True
+        user.is_hidden_bot = False
+
+        if payload.agent_type == "heuristic":
+            profile.agent_type = AgentType.HEURISTIC
+            profile.heuristic_level = payload.heuristic_level or "normal"
+            profile.model_mode = None
+            user.bot_kind = BotKind.HEURISTIC
+            if payload.model_version_id is not None:
+                user.model_version_id = payload.model_version_id
+        else:
+            profile.agent_type = AgentType.MODEL
+            profile.model_mode = payload.model_mode or "fast"
+            profile.heuristic_level = None
+            user.bot_kind = BotKind.MODEL
+            user.model_version_id = payload.model_version_id
+
+        profile.enabled = payload.enabled
+        await self.user_repository.save_user(user)
+        profile = await self.user_repository.save_bot_profile(profile)
+        return BotProfileResponse(
+            user_id=user.id,
+            username=user.username,
+            bot_kind=user.bot_kind,
+            agent_type=profile.agent_type.value,
+            heuristic_level=profile.heuristic_level,
+            model_mode=profile.model_mode,
+            model_version_id=user.model_version_id,
+            enabled=profile.enabled,
+        )
 
     async def list_public_players(
         self, *, limit: int = 50, offset: int = 0, query: str | None = None
@@ -95,6 +139,7 @@ class IdentityService:
                 agent_type=profile.agent_type.value if profile else None,
                 heuristic_level=profile.heuristic_level if profile else None,
                 model_mode=profile.model_mode if profile else None,
+                model_version_id=user.model_version_id,
                 enabled=profile.enabled if profile else None,
             )
             for user, profile in rows

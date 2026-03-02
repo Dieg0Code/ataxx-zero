@@ -10,6 +10,7 @@ from fastapi import (
     Depends,
     HTTPException,
     Query,
+    Request,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -47,6 +48,15 @@ GAMEPLAY_SERVICE_DEP = Depends(get_gameplay_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
 AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_inference_service(request: Request) -> InferenceService:
+    """Resolve inference service honoring FastAPI dependency overrides in tests."""
+    provider = request.app.dependency_overrides.get(
+        get_inference_service_dep,
+        get_inference_service_dep,
+    )
+    return provider()
 
 
 async def _to_game_response(
@@ -115,7 +125,7 @@ async def _broadcast_move_applied(
 )
 def post_move(
     request: MoveRequest,
-    inference_service: InferenceService = INFERENCE_SERVICE_DEP,
+    http_request: Request,
 ) -> MoveResponse:
     try:
         board = board_from_state(request.board.model_dump())
@@ -127,6 +137,7 @@ def post_move(
 
     mode = request.mode
     if mode in {"fast", "strong"}:
+        inference_service = _resolve_inference_service(http_request)
         result = inference_service.predict(board=board, mode=mode)
         move_payload: MovePayload | None = None
         if result.move is not None:

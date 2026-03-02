@@ -23,6 +23,23 @@ class UserRepository:
     async def get_by_id(self, user_id: UUID) -> User | None:
         return await self.session.get(User, user_id)
 
+    async def save_user(self, user: User) -> User:
+        self.session.add(user)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def get_bot_profile(self, user_id: UUID) -> BotProfile | None:
+        stmt = select(BotProfile).where(col(BotProfile.user_id) == user_id)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def save_bot_profile(self, profile: BotProfile) -> BotProfile:
+        self.session.add(profile)
+        await self.session.commit()
+        await self.session.refresh(profile)
+        return profile
+
     async def count_users(self) -> int:
         stmt = select(func.count()).select_from(User)
         result = await self.session.execute(stmt)
