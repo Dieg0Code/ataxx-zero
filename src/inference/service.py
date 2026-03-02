@@ -12,10 +12,10 @@ import numpy as np
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
 from game.types import Move
-from model.system import AtaxxZero
 
 if TYPE_CHECKING:
     from engine.mcts import MCTS
+    from model.system import AtaxxZero
 
 InferenceMode = Literal["fast", "strong"]
 
@@ -133,6 +133,8 @@ class InferenceService:
         return torch_module
 
     def _load_system(self) -> AtaxxZero:
+        from model.system import AtaxxZero
+
         torch_module = self._require_torch()
         ckpt = self.checkpoint_path
         if ckpt.suffix == ".ckpt":
