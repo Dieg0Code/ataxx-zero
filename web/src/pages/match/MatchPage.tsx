@@ -62,6 +62,8 @@ const AI_THINK_DELAY_MS = 460;
 const AI_PREVIEW_MS = 420;
 const INFECTION_STEP_MS = 90;
 const INFECTION_BURST_MS = 420;
+const OUTGOING_INVITE_POLL_MS = 2500;
+const UI_TICK_MS = 120;
 const INTRO_COUNTDOWN_START = 3;
 const HOVER_SFX_MIN_GAP_MS = 120;
 const P2_MOVE_SFX_MIN_GAP_MS = 70;
@@ -1095,7 +1097,7 @@ export function MatchPage(): JSX.Element {
           // Keep polling; temporary network errors should not close invitation flow.
         }
       })();
-    }, 1200);
+    }, OUTGOING_INVITE_POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
@@ -1188,10 +1190,19 @@ export function MatchPage(): JSX.Element {
     }
   }, [selectedP2Bot]);
 
+  const needsUiTicker =
+    matchStarted ||
+    previewMove !== null ||
+    infectionBursts.length > 0 ||
+    Object.keys(infectionMask).length > 0;
+
   useEffect(() => {
-    const interval = window.setInterval(() => setNowMs(Date.now()), 40);
+    if (!needsUiTicker) {
+      return;
+    }
+    const interval = window.setInterval(() => setNowMs(Date.now()), UI_TICK_MS);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [needsUiTicker]);
 
   useEffect(() => {
     if (!matchStarted || !showIntro) {

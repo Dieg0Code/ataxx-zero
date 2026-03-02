@@ -36,21 +36,26 @@ export function useInvitations({
   const queryClient = useQueryClient();
   const [liveInvitations, setLiveInvitations] = useState<HumanInvitation[] | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [socketHealthy, setSocketHealthy] = useState(false);
 
   const invitationsQuery = useQuery({
     queryKey: ["invitations", scope, accessToken],
     queryFn: () => fetchIncomingInvitations(accessToken!, 12, 0),
     enabled: enabled && includeInitialFetch && accessToken !== null,
+    // Poll only while websocket fallback is degraded; this keeps UI fresh
+    // without hammering the API every few seconds during healthy socket sessions.
     refetchInterval:
-      enabled && includeInitialFetch && fallbackPollingMs > 0
+      enabled && includeInitialFetch && fallbackPollingMs > 0 && !socketHealthy
         ? fallbackPollingMs
         : false,
     refetchIntervalInBackground: true,
+    staleTime: 8_000,
   });
 
   useEffect(() => {
     if (!enabled || accessToken === null) {
       setLiveInvitations(null);
+      setSocketHealthy(false);
       return;
     }
     let cancelled = false;
@@ -80,11 +85,13 @@ export function useInvitations({
       if (event.type !== "invitations.status") {
         return;
       }
+      setSocketHealthy(true);
       const pendingItems = event.payload.items.filter((item) => item.status === "pending");
       setLiveInvitations(pendingItems);
     };
 
     const onSocketFailure = (): void => {
+      setSocketHealthy(false);
       setLiveInvitations(null);
       if (includeInitialFetch) {
         void queryClient.invalidateQueries({ queryKey: ["invitations", scope, accessToken] });
@@ -97,6 +104,9 @@ export function useInvitations({
         return;
       }
       socket = openInvitationsSocket(accessToken, onEvent);
+      socket.onopen = () => {
+        setSocketHealthy(true);
+      };
       socket.onerror = () => {
         onSocketFailure();
       };

@@ -233,7 +233,8 @@ async def invitations_ws(
                 }
             )
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                # Lower polling pressure on DB while still keeping invitation UI responsive.
+                await asyncio.wait_for(websocket.receive_text(), timeout=2.5)
             except (TimeoutError, asyncio.TimeoutError):
                 continue
     except (WebSocketDisconnect, asyncio.TimeoutError):

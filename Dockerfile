@@ -28,6 +28,9 @@ COPY pyproject.toml uv.lock README.md ./
 # Install only API runtime dependencies; the training stack (torch/cuda) is not
 # needed for the web service and was causing Railway build timeouts.
 RUN uv sync --frozen --no-install-project --only-group api
+# The API can run model bots from `.pt` checkpoints; install CPU-only torch in
+# the API venv so Railway does not need CUDA runtimes.
+RUN uv pip install --python /app/.venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch
 
 
 FROM python:3.11-slim AS runtime
