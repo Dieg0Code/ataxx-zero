@@ -69,3 +69,6 @@ COPY checkpoints/last.ckpt /app/checkpoints/last.ckpt
 # Optional target for future ONNX runtime integration.
 FROM runtime AS runtime-with-onnx
 COPY checkpoints/last.onnx /app/checkpoints/last.onnx
+
+# Default/final stage used by platforms that don't set --target (e.g. Railway).
+FROM runtime AS final
