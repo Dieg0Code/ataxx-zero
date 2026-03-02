@@ -124,7 +124,7 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     enabled: isAuthenticated,
     includeInitialFetch: true,
     scope: "appshell",
-    fallbackPollingMs: 8000,
+    fallbackPollingMs: 0,
   });
   const incomingInvitations = pendingInvitations.length;
   const sortedInvitations = useMemo(
