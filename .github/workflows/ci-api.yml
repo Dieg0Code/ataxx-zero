@@ -100,4 +100,4 @@ jobs:
         run: uv run alembic upgrade head --sql > /tmp/alembic_upgrade.sql
 
       - name: Docker build (production image sanity check)
-        run: docker build -t ataxx-zero:ci .
+        run: docker build --target runtime -t ataxx-zero:ci .
