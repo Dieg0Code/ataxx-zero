@@ -1,33 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from urllib.parse import unquote, urlparse
 
 from api.db.models import ModelVersion
+from api.inference_artifacts import resolve_artifact_uri
 from inference.service import InferenceService
-
-
-def _normalize_local_artifact_path(uri: str | None) -> str | None:
-    if uri is None:
-        return None
-    cleaned = uri.strip()
-    if cleaned == "":
-        return None
-
-    parsed = urlparse(cleaned)
-    if parsed.scheme in {"", "file"}:
-        if parsed.scheme == "file":
-            if parsed.netloc not in {"", "localhost"}:
-                raise ValueError(f"Unsupported artifact URI host: {cleaned}")
-            path = unquote(parsed.path)
-            if path == "":
-                raise ValueError(f"Invalid artifact URI (empty path): {cleaned}")
-            return path
-        return cleaned
-
-    raise ValueError(
-        f"Unsupported artifact URI scheme '{parsed.scheme}'. Use local paths or file:// URIs."
-    )
 
 
 def _runtime_config_from_base(base_service: InferenceService | None) -> tuple[str, int, float, bool]:
@@ -65,11 +42,19 @@ def resolve_model_inference_service(
     version: ModelVersion,
     base_service: InferenceService | None,
 ) -> InferenceService:
-    checkpoint_path = _normalize_local_artifact_path(version.checkpoint_uri)
-    onnx_path = _normalize_local_artifact_path(version.onnx_uri)
+    checkpoint_path = resolve_artifact_uri(
+        version.checkpoint_uri,
+        default_repo_id=version.hf_repo_id,
+        default_revision=version.hf_revision,
+    )
+    onnx_path = resolve_artifact_uri(
+        version.onnx_uri,
+        default_repo_id=version.hf_repo_id,
+        default_revision=version.hf_revision,
+    )
     if checkpoint_path is None and onnx_path is None:
         raise ValueError(
-            f"Model version '{version.name}' has no local checkpoint_uri/onnx_uri configured."
+            f"Model version '{version.name}' has no usable checkpoint_uri/onnx_uri configured."
         )
 
     # Keep runtime knobs aligned with the API default inference service so

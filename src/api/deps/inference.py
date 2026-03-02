@@ -5,6 +5,7 @@ from functools import lru_cache
 from fastapi import HTTPException, status
 
 from api.config import Settings, get_settings
+from api.inference_artifacts import resolve_artifact_uri
 from inference.service import InferenceService
 
 
@@ -30,9 +31,14 @@ def _build_inference_service(
 def get_inference_service_dep() -> InferenceService:
     settings: Settings = get_settings()
     try:
+        resolved_checkpoint = resolve_artifact_uri(settings.model_checkpoint_path)
+        resolved_onnx = resolve_artifact_uri(settings.model_onnx_path)
+
+        # InferenceService expects a checkpoint path value, but ONNX-only runtime is valid.
+        checkpoint_arg = resolved_checkpoint or "__missing_checkpoint__.ckpt"
         return _build_inference_service(
-            checkpoint_path=settings.model_checkpoint_path,
-            onnx_path=settings.model_onnx_path,
+            checkpoint_path=checkpoint_arg,
+            onnx_path=resolved_onnx or "",
             device=settings.inference_device,
             mcts_sims=settings.inference_mcts_sims,
             c_puct=settings.inference_c_puct,
