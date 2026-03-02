@@ -25,9 +25,9 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
-# Runtime deps only (project + api group).
-RUN uv sync --frozen --no-dev --group api
+# Install only API runtime dependencies; the training stack (torch/cuda) is not
+# needed for the web service and was causing Railway build timeouts.
+RUN uv sync --frozen --no-install-project --only-group api
 
 
 FROM python:3.11-slim AS runtime
