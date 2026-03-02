@@ -77,9 +77,7 @@ jobs:
           python-version: "3.11"
 
       - name: Setup Pulumi CLI
-        uses: pulumi/actions@v6
-        with:
-          command: version
+        uses: pulumi/setup-pulumi@v2
 
       - name: Install stack dependencies
         working-directory: infra/runpod-train

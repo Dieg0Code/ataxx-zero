@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 # revision identifiers, used by Alembic.
 revision = "c3d52d7a1b90"
@@ -19,10 +19,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    if inspector.has_table("queueentry"):
-        return
+    # Offline migrations use a mock connection that cannot be inspected.
+    if not context.is_offline_mode():
+        bind = op.get_bind()
+        inspector = sa.inspect(bind)
+        if inspector.has_table("queueentry"):
+            return
 
     op.create_table(
         "queueentry",
@@ -62,10 +64,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    if not inspector.has_table("queueentry"):
-        return
+    if not context.is_offline_mode():
+        bind = op.get_bind()
+        inspector = sa.inspect(bind)
+        if not inspector.has_table("queueentry"):
+            return
 
     op.drop_index("ix_queueentry_user_id", table_name="queueentry")
     op.drop_index("ix_queueentry_status", table_name="queueentry")
