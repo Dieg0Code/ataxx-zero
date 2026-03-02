@@ -100,7 +100,7 @@ jobs:
           pulumi config set runpod-train:imageName "${{ inputs.image_name }}"
           pulumi config set runpod-train:repository "${{ inputs.repository }}"
           pulumi config set runpod-train:gitRef "${{ inputs.git_ref }}"
-          pulumi config set runpod-train:trainArgs "${{ inputs.train_args }}"
+          pulumi config set runpod-train:trainArgs -- "${{ inputs.train_args }}"
           pulumi config set runpod-train:hfRepoId "${{ inputs.hf_repo_id }}"
           pulumi config set runpod-train:hfRunId "${{ inputs.hf_run_id }}"
           pulumi config set runpod-train:hfToken "${HF_TOKEN}" --secret
