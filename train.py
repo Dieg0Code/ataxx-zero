@@ -30,6 +30,7 @@ from training.checkpointing import (  # noqa: E402
     ensure_hf_ready,
     init_hf_checkpointer,
     should_save_iteration_checkpoint,
+    wait_for_hf_uploads,
 )
 from training.config_runtime import (  # noqa: E402
     CONFIG,
@@ -352,6 +353,8 @@ def main() -> None:
         for iteration in range(start_iteration + 1, iterations + 1):
             if hf_upload_futures:
                 hf_upload_futures = drain_completed_hf_uploads(hf_upload_futures, fail_on_error=cfg_bool("fail_on_hf_upload_error"))
+                if len(hf_upload_futures) > cfg_int("max_pending_hf_uploads"):
+                    raise RuntimeError("HF upload backlog is growing; aborting early.")
             epoch_pulse.set_iteration(iteration)
             selfplay_start = time.perf_counter()
             selfplay_stats = execute_self_play(
@@ -458,6 +461,8 @@ def main() -> None:
                         )
                         hf_upload_futures.append(future)
                         monitor.log_warning(iteration=iteration, message=f"HF upload queued for iteration {iteration}.")
+                        if len(hf_upload_futures) > cfg_int("max_pending_hf_uploads"):
+                            raise RuntimeError("HF upload backlog exceeded configured threshold.")
                     else:
                         hf_checkpointer.upload_checkpoint_files(
                             iteration=iteration,
@@ -482,12 +487,14 @@ def main() -> None:
             )
     finally:
         if hf_upload_executor is not None:
-            for future in hf_upload_futures:
-                try:
-                    future.result()
-                except Exception:
-                    log("A queued HF upload failed.")
-            hf_upload_executor.shutdown(wait=True)
-
+            try:
+                wait_for_hf_uploads(
+                    hf_upload_futures,
+                    timeout_s=cfg_float("hf_upload_future_timeout_s"),
+                    fail_on_error=cfg_bool("fail_on_hf_upload_error"),
+                )
+            except Exception as exc:
+                log(f"HF upload wait failed: {exc}")
+            hf_upload_executor.shutdown(wait=False, cancel_futures=True)
 if __name__ == "__main__":
     main()

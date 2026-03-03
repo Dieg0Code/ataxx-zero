@@ -58,6 +58,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "hf_run_id": "policy_spatial_v1",
     "hf_token_env": "HF_TOKEN",
     "hf_local_dir": "hf_checkpoints",
+    "max_pending_hf_uploads": 2,
+    "hf_upload_future_timeout_s": 120.0,
     "show_progress_bar": False,
     "trainer_log_every_n_steps": 99_999,
     "monitor_log_every": 5,
@@ -170,6 +172,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf", action="store_true")
     parser.add_argument("--hf-repo-id", default=None)
     parser.add_argument("--hf-run-id", default=None)
+    parser.add_argument("--max-pending-hf-uploads", type=int, default=None)
+    parser.add_argument("--hf-upload-timeout-s", type=float, default=None)
     return parser.parse_args()
 
 
@@ -285,6 +289,10 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["hf_repo_id"] = args.hf_repo_id
     if args.hf_run_id is not None:
         CONFIG["hf_run_id"] = args.hf_run_id.strip()
+    if args.max_pending_hf_uploads is not None:
+        CONFIG["max_pending_hf_uploads"] = max(1, args.max_pending_hf_uploads)
+    if args.hf_upload_timeout_s is not None:
+        CONFIG["hf_upload_future_timeout_s"] = max(1.0, args.hf_upload_timeout_s)
 
 
 def cfg_int(key: str) -> int:
@@ -344,6 +352,10 @@ def validate_config() -> None:
         raise ValueError("CONFIG['mcts_cache_size'] must be >= 0.")
     if cfg_int("ddp_timeout_seconds") <= 0:
         raise ValueError("CONFIG['ddp_timeout_seconds'] must be > 0.")
+    if cfg_int("max_pending_hf_uploads") <= 0:
+        raise ValueError("CONFIG['max_pending_hf_uploads'] must be > 0.")
+    if cfg_float("hf_upload_future_timeout_s") <= 0.0:
+        raise ValueError("CONFIG['hf_upload_future_timeout_s'] must be > 0.")
 
     opp_sum = (
         cfg_float("opponent_self_prob")

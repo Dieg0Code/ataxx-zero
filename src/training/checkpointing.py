@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -296,6 +297,29 @@ def drain_completed_hf_uploads(
     return pending
 
 
+def wait_for_hf_uploads(
+    futures: list[Future[None]],
+    *,
+    timeout_s: float,
+    fail_on_error: bool,
+) -> None:
+    """Wait for pending HF uploads with a bounded timeout per future."""
+    bounded_timeout = max(1.0, float(timeout_s))
+    for future in futures:
+        try:
+            future.result(timeout=bounded_timeout)
+        except FutureTimeoutError as exc:
+            if fail_on_error:
+                raise RuntimeError(
+                    f"HF upload timed out after {bounded_timeout:.1f}s per future.",
+                ) from exc
+            log(f"HF upload timed out (continuing): {exc}")
+        except Exception as exc:
+            if fail_on_error:
+                raise RuntimeError("HF upload future failed during shutdown wait.") from exc
+            log(f"HF upload failed during shutdown (continuing): {exc}")
+
+
 def should_save_iteration_checkpoint(iteration: int, total_iterations: int, save_every: int) -> bool:
     """Always persist the final iteration even when it is not divisible by save_every."""
     if iteration >= total_iterations:
@@ -311,4 +335,5 @@ __all__ = [
     "ensure_hf_ready",
     "init_hf_checkpointer",
     "should_save_iteration_checkpoint",
+    "wait_for_hf_uploads",
 ]

@@ -8,6 +8,7 @@ from training.checkpointing import (
     drain_completed_hf_uploads,
     ensure_hf_ready,
     should_save_iteration_checkpoint,
+    wait_for_hf_uploads,
 )
 from training.config_runtime import CONFIG
 
@@ -54,6 +55,15 @@ class TestTrainingCheckpointing(unittest.TestCase):
         failed.set_exception(RuntimeError("upload failed"))
         remaining = drain_completed_hf_uploads([failed], fail_on_error=False)
         self.assertEqual(remaining, [])
+
+    def test_wait_for_hf_uploads_raises_timeout_in_fail_fast_mode(self) -> None:
+        pending: Future[None] = Future()
+        with self.assertRaises(RuntimeError):
+            wait_for_hf_uploads([pending], timeout_s=1.0, fail_on_error=True)
+
+    def test_wait_for_hf_uploads_tolerates_timeout_when_configured(self) -> None:
+        pending: Future[None] = Future()
+        wait_for_hf_uploads([pending], timeout_s=1.0, fail_on_error=False)
 
     def test_should_save_iteration_checkpoint_on_schedule(self) -> None:
         self.assertTrue(
