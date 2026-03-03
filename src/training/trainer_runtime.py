@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 
 from training.config_runtime import (
     TrainerPrecision,
@@ -43,6 +46,15 @@ def is_ddp_rendezvous_timeout(exc: BaseException) -> bool:
     )
 
 
+def resolve_trainer_strategy(strategy: str) -> str | DDPStrategy:
+    timeout = timedelta(seconds=max(30, cfg_int("ddp_timeout_seconds")))
+    if strategy == "ddp":
+        return DDPStrategy(timeout=timeout, start_method="popen")
+    if strategy == "ddp_spawn":
+        return DDPStrategy(timeout=timeout, start_method="spawn")
+    return strategy
+
+
 def build_trainer(
     *,
     epochs: int,
@@ -59,11 +71,12 @@ def build_trainer(
     callbacks: list[Callback] = [checkpoint_callback, lr_monitor]
     if extra_callbacks is not None:
         callbacks.extend(extra_callbacks)
+    resolved_strategy = resolve_trainer_strategy(strategy)
     return pl.Trainer(
         max_epochs=epochs,
         accelerator=accelerator,
         devices=devices,
-        strategy=strategy,
+        strategy=resolved_strategy,
         precision=precision,
         benchmark=benchmark,
         callbacks=callbacks,
@@ -107,4 +120,5 @@ __all__ = [
     "is_ddp_rendezvous_timeout",
     "resolve_trainer_hw",
     "resolve_trainer_precision",
+    "resolve_trainer_strategy",
 ]

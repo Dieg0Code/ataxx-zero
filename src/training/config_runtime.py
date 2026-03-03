@@ -69,6 +69,7 @@ CONFIG: dict[str, int | float | bool | str] = {
     "trainer_strategy": "auto",
     "trainer_precision": "bf16-mixed",
     "trainer_benchmark": True,
+    "ddp_timeout_seconds": 180,
     "mcts_use_amp": True,
     "mcts_cache_size": 100_000,
     "mcts_leaf_batch_size": 32,
@@ -121,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-log-versions", type=int, default=None)
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--strategy", default=None)
+    parser.add_argument("--ddp-timeout-s", type=int, default=None)
     parser.add_argument(
         "--precision",
         choices=["16-mixed", "bf16-mixed", "32-true"],
@@ -206,6 +208,8 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["trainer_devices"] = max(1, args.devices)
     if args.strategy is not None:
         CONFIG["trainer_strategy"] = args.strategy
+    if args.ddp_timeout_s is not None:
+        CONFIG["ddp_timeout_seconds"] = max(30, args.ddp_timeout_s)
     if args.precision is not None:
         CONFIG["trainer_precision"] = args.precision
     if args.num_workers is not None:
@@ -330,6 +334,8 @@ def validate_config() -> None:
         raise ValueError("CONFIG['value_loss_coeff'] must be >= 0.")
     if cfg_int("mcts_cache_size") < 0:
         raise ValueError("CONFIG['mcts_cache_size'] must be >= 0.")
+    if cfg_int("ddp_timeout_seconds") <= 0:
+        raise ValueError("CONFIG['ddp_timeout_seconds'] must be > 0.")
 
     opp_sum = (
         cfg_float("opponent_self_prob")

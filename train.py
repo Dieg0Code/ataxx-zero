@@ -26,6 +26,7 @@ from training.callbacks import OptimizerStateTransfer  # noqa: E402
 from training.checkpointing import (  # noqa: E402
     cleanup_local_checkpoints,
     cleanup_old_log_versions,
+    ensure_hf_ready,
     init_hf_checkpointer,
     should_save_iteration_checkpoint,
 )
@@ -198,11 +199,11 @@ def _run_warmup_if_needed(
     optimizer_transfer: OptimizerStateTransfer,
     monitor: TrainingMonitor,
     epoch_pulse: EpochPulseCallback,
-) -> None:
+) -> tuple[str, int, str, TrainerPrecision]:
     warmup_games = cfg_int("warmup_games")
     warmup_epochs = cfg_int("warmup_epochs")
     if start_iteration != 0 or warmup_games <= 0 or warmup_epochs <= 0:
-        return
+        return trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision
 
     # Warmup seeds the policy with legal, sensible moves before self-play noise.
     warmup_rng = torch.Generator().manual_seed(cfg_int("seed"))
@@ -216,24 +217,28 @@ def _run_warmup_if_needed(
     monitor.log_warmup(examples=len(warmup_examples), games=warmup_games)
     train_loader = _build_train_loader(buffer, device=device)
     val_loader = _build_val_loader(buffer, device=device)
-    warmup_trainer = build_trainer(
+    (
+        _warmup_trainer,
+        trainer_accelerator,
+        trainer_devices,
+        trainer_strategy,
+        trainer_precision,
+    ) = _fit_with_ddp_fallback(
+        system=system,
+        train_loader=train_loader,
+        val_loader=val_loader,
         epochs=warmup_epochs,
-        accelerator=trainer_accelerator,
-        devices=trainer_devices,
-        strategy=trainer_strategy,
-        precision=trainer_precision,
-        benchmark=cfg_bool("trainer_benchmark"),
+        trainer_accelerator=trainer_accelerator,
+        trainer_devices=trainer_devices,
+        trainer_strategy=trainer_strategy,
+        trainer_precision=trainer_precision,
         checkpoint_callback=checkpoint_callback,
         lr_monitor=lr_monitor,
         logger=logger,
-        extra_callbacks=[optimizer_transfer, epoch_pulse],
+        optimizer_transfer=optimizer_transfer,
+        epoch_pulse=epoch_pulse,
     )
-    system.train()
-    warmup_trainer.fit(
-        model=system,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
-    )
+    return trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision
 
 
 def main() -> None:
@@ -286,6 +291,7 @@ def main() -> None:
     buffer = ReplayBuffer(capacity=cfg_int("buffer_size"))
 
     hf_checkpointer = init_hf_checkpointer()
+    ensure_hf_ready(hf_checkpointer)
     hf_upload_executor: ThreadPoolExecutor | None = None
     hf_upload_futures: list[Future[None]] = []
     if hf_checkpointer is not None:
@@ -324,7 +330,7 @@ def main() -> None:
         pulse_every=cfg_int("epoch_pulse_every"),
     )
 
-    _run_warmup_if_needed(
+    trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision = _run_warmup_if_needed(
         start_iteration=start_iteration,
         system=system,
         buffer=buffer,
@@ -469,18 +475,12 @@ def main() -> None:
                             message=f"HF checkpoint uploaded for iteration {iteration}.",
                         )
                 except (OSError, ValueError):
-                    monitor.log_warning(
-                        iteration=iteration,
-                        message="HF upload failed for this iteration.",
-                    )
+                    monitor.log_warning(iteration=iteration, message="HF upload failed for this iteration.")
             if cfg_bool("export_onnx"):
                 try:
                     export_onnx(system.model, cfg_str("onnx_path"), device=device)
                 except (OSError, RuntimeError, ValueError):
-                    monitor.log_warning(
-                        iteration=iteration,
-                        message="ONNX export failed for this iteration.",
-                    )
+                    monitor.log_warning(iteration=iteration, message="ONNX export failed for this iteration.")
 
             cleanup_old_log_versions(
                 log_dir=log_dir,

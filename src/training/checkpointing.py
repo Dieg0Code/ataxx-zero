@@ -258,6 +258,23 @@ def init_hf_checkpointer() -> HuggingFaceCheckpointer | None:
     )
 
 
+def ensure_hf_ready(checkpointer: HuggingFaceCheckpointer | None) -> None:
+    """Fail fast when HF checkpointing was requested but cannot be initialized."""
+    if not cfg_bool("hf_enabled"):
+        return
+    if checkpointer is not None:
+        log(
+            "HF checkpointing enabled: "
+            f"repo={cfg_str('hf_repo_id').strip()} run_id={cfg_str('hf_run_id').strip()}",
+        )
+        return
+    token_env = cfg_str("hf_token_env")
+    raise RuntimeError(
+        "HF checkpointing requested (--hf) but initialization failed. "
+        f"Check token env '{token_env}', hf_repo_id, and hf_run_id before starting.",
+    )
+
+
 def should_save_iteration_checkpoint(iteration: int, total_iterations: int, save_every: int) -> bool:
     """Always persist the final iteration even when it is not divisible by save_every."""
     if iteration >= total_iterations:
@@ -269,6 +286,7 @@ __all__ = [
     "HuggingFaceCheckpointer",
     "cleanup_local_checkpoints",
     "cleanup_old_log_versions",
+    "ensure_hf_ready",
     "init_hf_checkpointer",
     "should_save_iteration_checkpoint",
 ]
