@@ -101,13 +101,9 @@ class AtaxxZero(pl.LightningModule):
         batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
         boards, target_pis, target_vs = batch
-        legal_mask = (target_pis > 0).to(dtype=boards.dtype)
-        has_legal_support = torch.sum(legal_mask, dim=1, keepdim=True) > 0
-        if not bool(torch.all(has_legal_support).item()):
-            # Defensive fallback: keep logits finite even if a malformed target row is all zeros.
-            legal_mask = torch.where(has_legal_support, legal_mask, torch.ones_like(legal_mask))
-
-        pi_logits, v_pred = self(boards, action_mask=legal_mask)
+        # Training must not see a target-derived action mask, otherwise policy loss can
+        # become artificially easy (label leakage) when targets are sparse/one-hot.
+        pi_logits, v_pred = self(boards)
 
         loss_v = functional.mse_loss(v_pred.view(-1), target_vs.view(-1))
         log_probs = functional.log_softmax(pi_logits, dim=1)

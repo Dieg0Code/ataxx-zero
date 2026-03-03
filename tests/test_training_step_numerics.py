@@ -102,7 +102,7 @@ class TestTrainingStepNumerics(unittest.TestCase):
             self.assertIsInstance(action_mask_obj, torch.Tensor)
             self.assertTrue(torch.equal(action_mask_obj, mask))
 
-    def test_common_step_uses_policy_support_as_action_mask(self) -> None:
+    def test_common_step_does_not_pass_target_derived_action_mask(self) -> None:
         system = AtaxxZero(
             learning_rate=1e-3,
             d_model=64,
@@ -121,15 +121,11 @@ class TestTrainingStepNumerics(unittest.TestCase):
 
         with patch.object(system.model, "forward", return_value=(pi_logits, v_pred)) as forward_spy:
             _ = system._common_step((boards, target_pis, target_vs))
-            _, kwargs = forward_spy.call_args
+            args, kwargs = forward_spy.call_args
 
-        self.assertIn("action_mask", kwargs)
-        action_mask = kwargs["action_mask"]
-        self.assertIsInstance(action_mask, torch.Tensor)
-        self.assertEqual(action_mask.shape, target_pis.shape)
-        self.assertEqual(float(action_mask[0, 7].item()), 1.0)
-        self.assertEqual(float(torch.sum(action_mask[0]).item()), 1.0)
-        self.assertTrue(torch.all(action_mask[1] == 1.0).item())
+        self.assertEqual(len(args), 1)
+        self.assertIsInstance(args[0], torch.Tensor)
+        self.assertEqual(kwargs.get("action_mask"), None)
 
     def test_common_step_applies_value_loss_coefficient(self) -> None:
         system = AtaxxZero(

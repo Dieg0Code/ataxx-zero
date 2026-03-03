@@ -16,11 +16,9 @@ root = Path(__file__).resolve().parent
 src = root / "src"
 if str(src) not in sys.path:
     sys.path.insert(0, str(src))
-
 if TYPE_CHECKING:
     from data.replay_buffer import ReplayBuffer
     from model.system import AtaxxZero
-
 from training.bootstrap import generate_imitation_data  # noqa: E402
 from training.callbacks import OptimizerStateTransfer  # noqa: E402
 from training.checkpointing import (  # noqa: E402
@@ -73,7 +71,7 @@ def _build_train_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object]
             batch_size=cfg_int("batch_size"),
             shuffle=True,
             num_workers=cfg_int("num_workers"),
-            persistent_workers=True,
+            persistent_workers=cfg_bool("persistent_workers"),
             pin_memory=(device == "cuda"),
             prefetch_factor=2,
         )
@@ -99,7 +97,7 @@ def _build_val_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object] |
             batch_size=cfg_int("batch_size"),
             shuffle=False,
             num_workers=cfg_int("num_workers"),
-            persistent_workers=True,
+            persistent_workers=cfg_bool("persistent_workers"),
             pin_memory=(device == "cuda"),
             prefetch_factor=2,
         )
@@ -494,6 +492,8 @@ def main() -> None:
                     fail_on_error=cfg_bool("fail_on_hf_upload_error"),
                 )
             except Exception as exc:
+                if cfg_bool("fail_on_hf_upload_error"):
+                    raise
                 log(f"HF upload wait failed: {exc}")
             hf_upload_executor.shutdown(wait=False, cancel_futures=True)
 if __name__ == "__main__":
