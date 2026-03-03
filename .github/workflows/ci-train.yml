@@ -8,13 +8,14 @@ on:
     paths:
       - "train.py"
       - "train_improved.py"
+      - "src/training/**"
       - "src/engine/**"
       - "src/model/**"
       - "src/game/**"
       - "src/data/**"
       - "scripts/**"
       - "tests/test_mcts_numerics.py"
-      - "tests/test_training_step_numerics.py"
+      - "tests/test_training_*.py"
       - "pyproject.toml"
       - "uv.lock"
       - "pyrefly.toml"
@@ -23,13 +24,14 @@ on:
     paths:
       - "train.py"
       - "train_improved.py"
+      - "src/training/**"
       - "src/engine/**"
       - "src/model/**"
       - "src/game/**"
       - "src/data/**"
       - "scripts/**"
       - "tests/test_mcts_numerics.py"
-      - "tests/test_training_step_numerics.py"
+      - "tests/test_training_*.py"
       - "pyproject.toml"
       - "uv.lock"
       - "pyrefly.toml"
@@ -96,4 +98,13 @@ jobs:
         run: uv run pyrefly check train.py src tests
 
       - name: Pytest (train scope)
-        run: uv run pytest -q tests/test_mcts_numerics.py tests/test_training_step_numerics.py
+        run: |
+          uv run pytest -q \
+            tests/test_mcts_numerics.py \
+            tests/test_training_bootstrap.py \
+            tests/test_training_checkpointing.py \
+            tests/test_training_curriculum.py \
+            tests/test_training_monitor.py \
+            tests/test_training_selfplay_runtime.py \
+            tests/test_training_step_numerics.py \
+            tests/test_training_trainer_runtime.py
