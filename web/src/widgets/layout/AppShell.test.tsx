@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "@/widgets/layout/AppShell";
 import { renderWithProviders } from "@/test/render";
@@ -7,9 +7,14 @@ const logoutMock = vi.fn();
 const openInvitationsSocketMock = vi.fn();
 const acceptInvitationMock = vi.fn();
 const rejectInvitationMock = vi.fn();
-let authState: { isAuthenticated: boolean; user: { username: string } | null } = {
+const fetchActiveSeasonMock = vi.fn();
+const fetchLeaderboardMock = vi.fn();
+const fetchUserRatingMock = vi.fn();
+const fetchRatingEventsMock = vi.fn();
+const fetchMyGamesMock = vi.fn();
+let authState: { isAuthenticated: boolean; user: { id: string; username: string } | null } = {
   isAuthenticated: true,
-  user: { username: "test" },
+  user: { id: "user-1", username: "test" },
 };
 
 vi.mock("@/app/providers/useAuth", () => ({
@@ -30,15 +35,31 @@ vi.mock("@/features/matches/api", () => ({
   rejectInvitation: (...args: unknown[]) => rejectInvitationMock(...args),
 }));
 
+vi.mock("@/features/ranking/api", () => ({
+  fetchActiveSeason: (...args: unknown[]) => fetchActiveSeasonMock(...args),
+  fetchLeaderboard: (...args: unknown[]) => fetchLeaderboardMock(...args),
+  fetchUserRating: (...args: unknown[]) => fetchUserRatingMock(...args),
+  fetchRatingEvents: (...args: unknown[]) => fetchRatingEventsMock(...args),
+}));
+
+vi.mock("@/features/profile/api", () => ({
+  fetchMyGames: (...args: unknown[]) => fetchMyGamesMock(...args),
+}));
+
 describe("AppShell", () => {
   beforeEach(() => {
     logoutMock.mockReset();
     openInvitationsSocketMock.mockReset();
     acceptInvitationMock.mockReset();
     rejectInvitationMock.mockReset();
+    fetchActiveSeasonMock.mockReset();
+    fetchLeaderboardMock.mockReset();
+    fetchUserRatingMock.mockReset();
+    fetchRatingEventsMock.mockReset();
+    fetchMyGamesMock.mockReset();
     authState = {
       isAuthenticated: true,
-      user: { username: "test" },
+      user: { id: "user-1", username: "test" },
     };
     openInvitationsSocketMock.mockReturnValue({
       close: vi.fn(),
@@ -48,6 +69,49 @@ describe("AppShell", () => {
     });
     acceptInvitationMock.mockResolvedValue({});
     rejectInvitationMock.mockResolvedValue({});
+    fetchActiveSeasonMock.mockResolvedValue({
+      id: "season-1",
+      name: "S1",
+      starts_at: "2026-01-01T00:00:00.000Z",
+      ends_at: null,
+      is_active: true,
+    });
+    fetchLeaderboardMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 10,
+      offset: 0,
+      has_more: false,
+    });
+    fetchUserRatingMock.mockResolvedValue({
+      id: "rating-1",
+      user_id: "user-1",
+      season_id: "season-1",
+      rating: 1200,
+      games_played: 0,
+      wins: 0,
+      losses: 0,
+      draws: 0,
+      updated_at: "2026-01-01T00:00:00.000Z",
+      league: "Protocol",
+      division: "III",
+      lp: 0,
+      next_major_promo: null,
+    });
+    fetchRatingEventsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 6,
+      offset: 0,
+      has_more: false,
+    });
+    fetchMyGamesMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 8,
+      offset: 0,
+      has_more: false,
+    });
   });
 
   it("renders nav with active item and authenticated action", () => {
@@ -165,6 +229,37 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ver invitaciones" }));
     expect(await screen.findByText("invite-a")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Aceptar" })).toBeInTheDocument();
+  });
+
+  it("prefetches ranking and profile data on nav hover", async () => {
+    renderWithProviders(
+      <AppShell>
+        <div>contenido</div>
+      </AppShell>,
+      { route: "/" },
+    );
+
+    fireEvent.mouseEnter(screen.getByRole("link", { name: "Ranking" }));
+    await waitFor(() => {
+      expect(fetchActiveSeasonMock).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(fetchLeaderboardMock).toHaveBeenCalledWith("season-1", 10, 0, {
+        competitorFilter: "all",
+        query: "",
+      });
+    });
+    await waitFor(() => {
+      expect(fetchUserRatingMock).toHaveBeenCalledWith("user-1", "season-1");
+    });
+
+    fireEvent.mouseEnter(screen.getByRole("link", { name: "Perfil" }));
+    await waitFor(() => {
+      expect(fetchMyGamesMock).toHaveBeenCalledWith("token", 8, 0, ["finished"]);
+    });
+    await waitFor(() => {
+      expect(fetchRatingEventsMock).toHaveBeenCalledWith("user-1", "season-1", 6, 0);
+    });
   });
 
 });

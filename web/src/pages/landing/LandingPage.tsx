@@ -113,8 +113,9 @@ export function LandingPage(): JSX.Element {
   }, []);
 
   const seasonQuery = useQuery({
-    queryKey: ["home-active-season"],
+    queryKey: ["activeSeason"],
     queryFn: fetchActiveSeason,
+    staleTime: 60_000,
   });
 
   const leaderboardQuery = useQuery({

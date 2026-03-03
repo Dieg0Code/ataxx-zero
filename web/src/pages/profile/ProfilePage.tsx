@@ -208,12 +208,13 @@ export function ProfilePage(): JSX.Element {
   });
 
   const activeSeasonQuery = useQuery({
-    queryKey: ["active-season", accessToken],
+    queryKey: ["activeSeason"],
     queryFn: fetchActiveSeason,
+    staleTime: 60_000,
   });
 
   const ratingQuery = useQuery({
-    queryKey: ["profile-rating", user?.id, activeSeasonQuery.data?.id],
+    queryKey: ["my-rating", user?.id, activeSeasonQuery.data?.id],
     queryFn: () => fetchUserRating(user!.id, activeSeasonQuery.data!.id),
     enabled: Boolean(user?.id && activeSeasonQuery.data?.id),
   });

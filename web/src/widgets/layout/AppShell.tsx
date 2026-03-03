@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -15,6 +16,8 @@ import {
 import { useAuth } from "@/app/providers/useAuth";
 import { InvitationList } from "@/features/matches/InvitationList";
 import { useInvitations } from "@/features/matches/useInvitations";
+import { fetchMyGames } from "@/features/profile/api";
+import { fetchActiveSeason, fetchLeaderboard, fetchRatingEvents, fetchUserRating } from "@/features/ranking/api";
 import { assetUrl } from "@/shared/lib/assets";
 import { playSfx, primeSfx, primeSfxOnFirstInteraction } from "@/shared/lib/sfx";
 import { Button } from "@/shared/ui/button";
@@ -28,6 +31,10 @@ const NAV_ITEMS = [
 ];
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
 const INVITE_SFX_PATH = assetUrl("sfx/queue_found.ogg");
+const RANKING_PREFETCH_PAGE_SIZE = 10;
+const PROFILE_PREFETCH_PAGE_SIZE = 8;
+const HOME_PREFETCH_LIMIT = 3;
+const PREFETCH_COOLDOWN_MS = 15_000;
 
 type FlashTone = "success" | "warning" | "error" | "info";
 
@@ -98,11 +105,13 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
   const { isAuthenticated, user, accessToken, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const isMatchRoute = location.pathname.startsWith("/match");
   const [flashMessage, setFlashMessage] = useState<FlashMessage | null>(null);
   const [invitePanelOpen, setInvitePanelOpen] = useState(false);
   const invitePanelRef = useRef<HTMLDivElement | null>(null);
   const previousInviteCountRef = useRef(0);
+  const routePrefetchAtRef = useRef<Record<string, number>>({});
   const {
     invitations: pendingInvitations,
     actionLoadingId: inviteActionLoadingId,
@@ -131,6 +140,110 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     primeSfx([INVITE_SFX_PATH], 3);
     primeSfxOnFirstInteraction([INVITE_SFX_PATH], 3);
   }, []);
+
+  const prefetchRouteData = useCallback(
+    (to: string): void => {
+      const now = Date.now();
+      const lastPrefetch = routePrefetchAtRef.current[to] ?? 0;
+      if (now - lastPrefetch < PREFETCH_COOLDOWN_MS) {
+        return;
+      }
+      routePrefetchAtRef.current[to] = now;
+
+      const loadActiveSeason = async (): Promise<{ id: string } | null> => {
+        try {
+          const season = await queryClient.fetchQuery({
+            queryKey: ["activeSeason"],
+            queryFn: fetchActiveSeason,
+            staleTime: 60_000,
+          });
+          return { id: season.id };
+        } catch {
+          return null;
+        }
+      };
+
+      if (to === "/ranking") {
+        void (async () => {
+          const season = await loadActiveSeason();
+          if (season === null) {
+            return;
+          }
+          const tasks: Array<Promise<unknown>> = [
+            queryClient.prefetchQuery({
+              queryKey: ["leaderboard", season.id, 0, "all", ""],
+              queryFn: () =>
+                fetchLeaderboard(season.id, RANKING_PREFETCH_PAGE_SIZE, 0, {
+                  competitorFilter: "all",
+                  query: "",
+                }),
+              staleTime: 15_000,
+            }),
+          ];
+          if (user?.id) {
+            tasks.push(
+              queryClient.prefetchQuery({
+                queryKey: ["my-rating", user.id, season.id],
+                queryFn: () => fetchUserRating(user.id, season.id),
+                staleTime: 30_000,
+              }),
+            );
+          }
+          await Promise.all(tasks);
+        })();
+        return;
+      }
+
+      if (to === "/profile") {
+        if (!isAuthenticated || !accessToken || !user?.id) {
+          return;
+        }
+        void (async () => {
+          const season = await loadActiveSeason();
+          const tasks: Array<Promise<unknown>> = [
+            queryClient.prefetchQuery({
+              queryKey: ["profile-games", 0, accessToken],
+              queryFn: () => fetchMyGames(accessToken, PROFILE_PREFETCH_PAGE_SIZE, 0, ["finished"]),
+              staleTime: 30_000,
+            }),
+          ];
+          if (season !== null) {
+            tasks.push(
+              queryClient.prefetchQuery({
+                queryKey: ["my-rating", user.id, season.id],
+                queryFn: () => fetchUserRating(user.id, season.id),
+                staleTime: 30_000,
+              }),
+            );
+            tasks.push(
+              queryClient.prefetchQuery({
+                queryKey: ["profile-rating-events", user.id, season.id],
+                queryFn: () => fetchRatingEvents(user.id, season.id, 6, 0),
+                staleTime: 30_000,
+              }),
+            );
+          }
+          await Promise.all(tasks);
+        })();
+        return;
+      }
+
+      if (to === "/") {
+        void (async () => {
+          const season = await loadActiveSeason();
+          if (season === null) {
+            return;
+          }
+          await queryClient.prefetchQuery({
+            queryKey: ["home-top-leaderboard", season.id],
+            queryFn: () => fetchLeaderboard(season.id, HOME_PREFETCH_LIMIT, 0),
+            staleTime: 15_000,
+          });
+        })();
+      }
+    },
+    [accessToken, isAuthenticated, queryClient, user?.id],
+  );
 
   useEffect(() => {
     const previous = previousInviteCountRef.current;
@@ -302,6 +415,9 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
                   to={item.to}
                   aria-current={active ? "page" : undefined}
                   className="inline-flex items-center gap-1.5"
+                  onMouseEnter={() => prefetchRouteData(item.to)}
+                  onFocus={() => prefetchRouteData(item.to)}
+                  onTouchStart={() => prefetchRouteData(item.to)}
                   onClick={(event) => {
                     if (!onNavigateAttempt) {
                       return;
