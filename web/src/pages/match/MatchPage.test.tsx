@@ -556,12 +556,13 @@ describe("MatchPage queued human vs human", () => {
       expect(openPersistedGameSocketMock).toHaveBeenCalled();
     });
 
-    if (wsEventHandler === null) {
+    if (typeof wsEventHandler !== "function") {
       throw new Error("Expected websocket handler to be initialized.");
     }
+    const handleWsEvent = wsEventHandler as (event: PersistedGameWsEvent) => void;
 
     const staleBoardAfter = createInitialBoard();
-    wsEventHandler({
+    handleWsEvent({
       type: "game.move.applied",
       game_id: "game-h2h",
       move: {
@@ -616,13 +617,14 @@ describe("MatchPage queued human vs human", () => {
       expect(openPersistedGameSocketMock).toHaveBeenCalled();
     });
 
-    if (wsEventHandler === null) {
+    if (typeof wsEventHandler !== "function") {
       throw new Error("Expected websocket handler to be initialized.");
     }
+    const handleWsEvent = wsEventHandler as (event: PersistedGameWsEvent) => void;
 
     const boardAfter = createInitialBoard();
     boardAfter.half_moves = 1;
-    wsEventHandler({
+    handleWsEvent({
       type: "game.move.applied",
       game_id: "game-h2h",
       move: {
