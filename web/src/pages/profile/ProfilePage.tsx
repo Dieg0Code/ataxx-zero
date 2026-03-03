@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUpRight,
@@ -214,6 +214,8 @@ export function ProfilePage(): JSX.Element {
     queryKey: ["profile-games", offset, accessToken],
     queryFn: () => fetchMyGames(accessToken!, PAGE_SIZE, offset, ["finished"]),
     enabled: Boolean(accessToken),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
   const {
     invitations: invitationItems,
@@ -240,12 +242,16 @@ export function ProfilePage(): JSX.Element {
     queryKey: ["my-rating", user?.id, activeSeasonQuery.data?.id],
     queryFn: () => fetchUserRating(user!.id, activeSeasonQuery.data!.id),
     enabled: Boolean(user?.id && activeSeasonQuery.data?.id),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 
   const eventsQuery = useQuery({
     queryKey: ["profile-rating-events", user?.id, activeSeasonQuery.data?.id],
     queryFn: () => fetchRatingEvents(user!.id, activeSeasonQuery.data!.id, 6, 0),
     enabled: Boolean(user?.id && activeSeasonQuery.data?.id),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
   });
 
   useEffect(() => {
@@ -465,7 +471,9 @@ export function ProfilePage(): JSX.Element {
             <CardDescription>Lectura rapida de tu progreso en temporada activa.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {activeSeasonQuery.isLoading || ratingQuery.isLoading ? <p className="text-sm text-textDim">Sincronizando ladder...</p> : null}
+            {ratingQuery.data === undefined && (activeSeasonQuery.isLoading || ratingQuery.isLoading) ? (
+              <p className="text-sm text-textDim">Sincronizando ladder...</p>
+            ) : null}
             {activeSeasonQuery.isError || ratingQuery.isError ? <p className="text-sm text-redGlow">No se pudo cargar el estado competitivo.</p> : null}
 
             {ratingQuery.data ? (
@@ -567,9 +575,11 @@ export function ProfilePage(): JSX.Element {
             <CardDescription>Ultimos cambios de rating en temporada activa.</CardDescription>
           </CardHeader>
           <CardContent>
-            {eventsQuery.isLoading ? <p className="text-sm text-textDim">Cargando actividad...</p> : null}
+            {eventsQuery.isLoading && eventsQuery.data === undefined ? (
+              <p className="text-sm text-textDim">Cargando actividad...</p>
+            ) : null}
             {eventsQuery.isError ? <p className="text-sm text-redGlow">No se pudo cargar la actividad de ladder.</p> : null}
-            {!eventsQuery.isLoading && (eventsQuery.data?.items.length ?? 0) === 0 ? (
+            {!eventsQuery.isLoading && !eventsQuery.isError && (eventsQuery.data?.items.length ?? 0) === 0 ? (
               <p className="text-sm text-textDim">Aun no hay eventos competitivos para mostrar.</p>
             ) : null}
 
@@ -636,7 +646,9 @@ export function ProfilePage(): JSX.Element {
             <CardDescription>Solo partidas finalizadas de tu cuenta autenticada.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {gamesQuery.isLoading ? <p className="text-sm text-textDim">Cargando partidas...</p> : null}
+            {gamesQuery.isLoading && gamesQuery.data === undefined ? (
+              <p className="text-sm text-textDim">Cargando partidas...</p>
+            ) : null}
             {gamesQuery.isError ? <p className="text-sm text-redGlow">No se pudo cargar el historial de partidas.</p> : null}
             {deleteError ? <p className="text-sm text-redGlow">{deleteError}</p> : null}
             {!gamesQuery.isLoading && !gamesQuery.isError && (gamesQuery.data?.items.length ?? 0) === 0 ? (

@@ -69,6 +69,7 @@ const UI_TICK_MS = 120;
 const INTRO_COUNTDOWN_START = 3;
 const HOVER_SFX_MIN_GAP_MS = 120;
 const P2_MOVE_SFX_MIN_GAP_MS = 70;
+const RESOLVED_MOVE_HIGHLIGHT_MS = 1200;
 const PERSIST_MAX_RETRIES = 3;
 const PERSIST_BASE_BACKOFF_MS = 200;
 const PERSIST_SNAPSHOT_KEY = "ataxx.persist.snapshot.v1";
@@ -370,6 +371,10 @@ export function MatchPage(): JSX.Element {
   const [selectedP2BotId, setSelectedP2BotId] = useState<string>("");
   const lastHoverSfxAtRef = useRef(0);
   const lastP2MoveSfxAtRef = useRef(0);
+  const previewHalfMovesRef = useRef<number | null>(null);
+  const boardTiltRafRef = useRef<number | null>(null);
+  const boardTiltPendingRef = useRef({ x: 0, y: 0 });
+  const lastResolvedMoveTimerRef = useRef<number | null>(null);
   const gameplayWsRef = useRef<WebSocket | null>(null);
   const lastWsPlyRef = useRef(-1);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -405,6 +410,32 @@ export function MatchPage(): JSX.Element {
     const sfxPaths = Object.values(SFX);
     primeSfx(sfxPaths, 4);
     primeSfxOnFirstInteraction(sfxPaths, 4);
+  }, []);
+
+  const setResolvedMoveHighlight = useCallback((move: Move | null) => {
+    if (lastResolvedMoveTimerRef.current !== null) {
+      window.clearTimeout(lastResolvedMoveTimerRef.current);
+      lastResolvedMoveTimerRef.current = null;
+    }
+    setLastResolvedMove(move);
+    if (move === null) {
+      return;
+    }
+    lastResolvedMoveTimerRef.current = window.setTimeout(() => {
+      setLastResolvedMove(null);
+      lastResolvedMoveTimerRef.current = null;
+    }, RESOLVED_MOVE_HIGHLIGHT_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (lastResolvedMoveTimerRef.current !== null) {
+        window.clearTimeout(lastResolvedMoveTimerRef.current);
+      }
+      if (boardTiltRafRef.current !== null) {
+        window.cancelAnimationFrame(boardTiltRafRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -1295,8 +1326,22 @@ export function MatchPage(): JSX.Element {
   useEffect(() => {
     if (previewMove !== null && nowMs >= previewUntil) {
       setPreviewMove(null);
+      previewHalfMovesRef.current = null;
     }
   }, [nowMs, previewMove, previewUntil]);
+
+  useEffect(() => {
+    if (previewMove === null) {
+      return;
+    }
+    const sourceHalfMoves = previewHalfMovesRef.current;
+    if (sourceHalfMoves !== null && board.half_moves > sourceHalfMoves) {
+      // If board advanced from any source (WS/local), stale preview lines must disappear.
+      setPreviewMove(null);
+      setPreviewUntil(0);
+      previewHalfMovesRef.current = null;
+    }
+  }, [board.half_moves, previewMove]);
 
   const resetGame = useCallback(() => {
     setBoard(createInitialBoard());
@@ -1310,9 +1355,10 @@ export function MatchPage(): JSX.Element {
     clearPendingQueue(null);
     setPreviewMove(null);
     setPreviewUntil(0);
+    previewHalfMovesRef.current = null;
     setInfectionMask({});
     setInfectionBursts([]);
-    setLastResolvedMove(null);
+    setResolvedMoveHighlight(null);
     setMatchStarted(false);
     setShowIntro(false);
     setIntroCountdown(INTRO_COUNTDOWN_START);
@@ -1338,7 +1384,7 @@ export function MatchPage(): JSX.Element {
     setLoadingFinishRewards(false);
     setAnimatedLpDelta(null);
     setAnimatedRatingDelta(null);
-  }, [clearPendingQueue]);
+  }, [clearPendingQueue, setResolvedMoveHighlight]);
 
   const consumeQueuedMatchFromSession = useCallback(async (): Promise<void> => {
     try {
@@ -1432,7 +1478,7 @@ export function MatchPage(): JSX.Element {
       // WS notifications arrive after persistence, not before the move execution;
       // drawing "preview" for them feels like phantom/late intent lines.
       setResolvedMoves((prev) => Math.max(prev, event.move.ply + 1));
-      setLastResolvedMove(remoteMove);
+      setResolvedMoveHighlight(remoteMove);
 
       if (event.game.status === "finished") {
         setMatchEndMs(Date.now());
@@ -1457,7 +1503,7 @@ export function MatchPage(): JSX.Element {
       }
       socket.close();
     };
-  }, [accessToken, exitingMatch, isAuthenticated, navigate, persistedGameId, resetGame]);
+  }, [accessToken, exitingMatch, isAuthenticated, navigate, persistedGameId, resetGame, setResolvedMoveHighlight]);
 
   const leaveMatch = useCallback(
     async (options?: { redirectTo?: string; logoutAfter?: boolean }) => {
@@ -1703,9 +1749,10 @@ export function MatchPage(): JSX.Element {
     clearPendingQueue(null);
     setPreviewMove(null);
     setPreviewUntil(0);
+    previewHalfMovesRef.current = null;
     setInfectionMask({});
     setInfectionBursts([]);
-    setLastResolvedMove(null);
+    setResolvedMoveHighlight(null);
     setIntroCountdown(INTRO_COUNTDOWN_START);
     setShowIntro(true);
     setMatchStarted(true);
@@ -1744,6 +1791,7 @@ export function MatchPage(): JSX.Element {
     selectedRivalIsHuman,
     selectedP1Bot,
     selectedP2Player,
+    setResolvedMoveHighlight,
     user?.id,
   ]);
 
@@ -1843,14 +1891,14 @@ export function MatchPage(): JSX.Element {
         }
       }
       setInfectionMask(mask);
-      setLastResolvedMove(move);
+      setResolvedMoveHighlight(move);
       if (move !== null) {
         setResolvedMoves((prev) => prev + 1);
       }
       const normalized = normalizeForcedPasses(next);
       applyBoardUpdate(normalized.board, normalized.passes);
     },
-    [applyBoardUpdate],
+    [applyBoardUpdate, setResolvedMoveHighlight],
   );
 
   const persistMoveWithRetry = useCallback(
@@ -1978,6 +2026,7 @@ export function MatchPage(): JSX.Element {
       setEvalValue(prediction.value);
 
       if (plannedMove !== null) {
+        previewHalfMovesRef.current = board.half_moves;
         setPreviewMove(plannedMove);
         setPreviewUntil(Date.now() + AI_PREVIEW_MS);
         setStatus(`IA (${controller}) confirma ataque...`);
@@ -2000,6 +2049,7 @@ export function MatchPage(): JSX.Element {
 
       setPreviewMove(null);
       setPreviewUntil(0);
+      previewHalfMovesRef.current = null;
       animateTransition(before, nextBoard, plannedMove, side);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Error desconocido de IA";
@@ -2171,13 +2221,25 @@ export function MatchPage(): JSX.Element {
     const rect = event.currentTarget.getBoundingClientRect();
     const nx = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
     const ny = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
-    setBoardTilt({
+    boardTiltPendingRef.current = {
       x: -(ny * 2.1),
       y: nx * 2.1,
+    };
+    if (boardTiltRafRef.current !== null) {
+      return;
+    }
+    boardTiltRafRef.current = window.requestAnimationFrame(() => {
+      boardTiltRafRef.current = null;
+      setBoardTilt(boardTiltPendingRef.current);
     });
   }, []);
 
   const onBoardMouseLeave = useCallback(() => {
+    if (boardTiltRafRef.current !== null) {
+      window.cancelAnimationFrame(boardTiltRafRef.current);
+      boardTiltRafRef.current = null;
+    }
+    boardTiltPendingRef.current = { x: 0, y: 0 };
     setBoardTilt({ x: 0, y: 0 });
   }, []);
 
@@ -2760,6 +2822,11 @@ export function MatchPage(): JSX.Element {
                   const isPreviewTarget = previewMove !== null && previewMove.r2 === r && previewMove.c2 === c;
                   const isRecentOrigin = lastOrigin !== null && lastOrigin.row === r && lastOrigin.col === c;
                   const isRecentTarget = lastTarget !== null && lastTarget.row === r && lastTarget.col === c;
+                  const isAnimatedPiece = isPreviewOrigin;
+                  const basePieceShadow =
+                    cell === PLAYER_1
+                      ? "0 0 9px rgba(255,255,255,0.3)"
+                      : "0 0 12px rgba(132,204,22,0.42)";
 
                   return (
                     <button
@@ -2789,30 +2856,45 @@ export function MatchPage(): JSX.Element {
                           } ${
                             isPreviewOrigin || isRecentTarget ? "scale-110" : ""
                           }`}
+                          style={!isAnimatedPiece ? { boxShadow: basePieceShadow } : undefined}
                           initial={{ scale: 0.8, opacity: 0.8 }}
-                          animate={{
-                            scale: isPreviewOrigin ? 1.1 : 1,
-                            opacity: 1,
-                            y: isPreviewOrigin ? [-1, 1, -1] : 0,
-                            boxShadow:
-                              cell === PLAYER_2
-                                ? [
-                                    "0 0 8px rgba(132,204,22,0.32)",
-                                    "0 0 18px rgba(132,204,22,0.58)",
-                                    "0 0 8px rgba(132,204,22,0.32)",
-                                  ]
-                                : [
-                                    "0 0 7px rgba(255,255,255,0.22)",
-                                    "0 0 13px rgba(255,255,255,0.36)",
-                                    "0 0 7px rgba(255,255,255,0.22)",
-                                  ],
-                          }}
-                          transition={{
-                            scale: { type: "spring", stiffness: 360, damping: 24 },
-                            opacity: { duration: 0.22 },
-                            y: { duration: 1.2, repeat: Infinity, ease: "easeInOut" },
-                            boxShadow: { duration: 1.8, repeat: Infinity, ease: "easeInOut" },
-                          }}
+                          animate={
+                            isAnimatedPiece
+                              ? {
+                                  scale: 1.1,
+                                  opacity: 1,
+                                  y: [-1, 1, -1],
+                                  boxShadow:
+                                    cell === PLAYER_2
+                                      ? [
+                                          "0 0 8px rgba(132,204,22,0.32)",
+                                          "0 0 18px rgba(132,204,22,0.58)",
+                                          "0 0 8px rgba(132,204,22,0.32)",
+                                        ]
+                                      : [
+                                          "0 0 7px rgba(255,255,255,0.22)",
+                                          "0 0 13px rgba(255,255,255,0.36)",
+                                          "0 0 7px rgba(255,255,255,0.22)",
+                                        ],
+                                }
+                              : {
+                                  scale: 1,
+                                  opacity: 1,
+                                }
+                          }
+                          transition={
+                            isAnimatedPiece
+                              ? {
+                                  scale: { type: "spring", stiffness: 360, damping: 24 },
+                                  opacity: { duration: 0.22 },
+                                  y: { duration: 1.2, repeat: Infinity, ease: "easeInOut" },
+                                  boxShadow: { duration: 1.8, repeat: Infinity, ease: "easeInOut" },
+                                }
+                              : {
+                                  scale: { type: "spring", stiffness: 360, damping: 24 },
+                                  opacity: { duration: 0.22 },
+                                }
+                          }
                         />
                       )}
                       {isTarget && <span className="absolute h-2.5 w-2.5 rounded-full bg-zinc-200" />}

@@ -31,6 +31,13 @@ const NAV_ITEMS = [
 ];
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
 const INVITE_SFX_PATH = assetUrl("sfx/queue_found.ogg");
+const GLOBAL_UI_SFX_PATHS = [
+  assetUrl("sfx/ui_click.ogg"),
+  assetUrl("sfx/start.ogg"),
+  assetUrl("sfx/queue_found.ogg"),
+  assetUrl("sfx/queue_accept.ogg"),
+  assetUrl("sfx/queue_reject.ogg"),
+] as const;
 const RANKING_PREFETCH_PAGE_SIZE = 10;
 const PROFILE_PREFETCH_PAGE_SIZE = 8;
 const HOME_PREFETCH_LIMIT = 3;
@@ -137,8 +144,8 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
   );
 
   useEffect(() => {
-    primeSfx([INVITE_SFX_PATH], 3);
-    primeSfxOnFirstInteraction([INVITE_SFX_PATH], 3);
+    primeSfx(GLOBAL_UI_SFX_PATHS, 4);
+    primeSfxOnFirstInteraction(GLOBAL_UI_SFX_PATHS, 4);
   }, []);
 
   const prefetchRouteData = useCallback(
@@ -244,6 +251,17 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     },
     [accessToken, isAuthenticated, queryClient, user?.id],
   );
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+    prefetchRouteData("/ranking");
+    prefetchRouteData("/profile");
+    if (location.pathname !== "/") {
+      prefetchRouteData("/");
+    }
+  }, [isAuthenticated, location.pathname, prefetchRouteData]);
 
   useEffect(() => {
     const previous = previousInviteCountRef.current;

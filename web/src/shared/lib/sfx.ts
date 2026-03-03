@@ -137,11 +137,13 @@ export function primeSfxOnFirstInteraction(paths: readonly string[], poolSize = 
     }
     primeSfx(paths, poolSize);
     window.removeEventListener("pointerdown", primeOnce);
+    window.removeEventListener("pointermove", primeOnce);
     window.removeEventListener("touchstart", primeOnce);
     window.removeEventListener("keydown", primeOnce);
   };
   primedOnInteraction = true;
   window.addEventListener("pointerdown", primeOnce, { once: true });
+  window.addEventListener("pointermove", primeOnce, { once: true, passive: true });
   window.addEventListener("touchstart", primeOnce, { once: true });
   window.addEventListener("keydown", primeOnce, { once: true });
 }
