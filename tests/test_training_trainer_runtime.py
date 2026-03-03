@@ -43,6 +43,7 @@ class TestTrainingTrainerRuntime(unittest.TestCase):
         CONFIG["trainer_strategy"] = "ddp_spawn"
         with (
             patch("training.trainer_runtime.torch.cuda.is_available", return_value=True),
+            patch("training.trainer_runtime.torch.cuda.get_device_capability", return_value=(8, 0)),
             patch("training.trainer_runtime.torch.cuda.device_count", return_value=1),
         ):
             accelerator, devices, strategy = resolve_trainer_hw()
@@ -55,12 +56,25 @@ class TestTrainingTrainerRuntime(unittest.TestCase):
         CONFIG["trainer_strategy"] = "ddp_spawn"
         with (
             patch("training.trainer_runtime.torch.cuda.is_available", return_value=True),
+            patch("training.trainer_runtime.torch.cuda.get_device_capability", return_value=(8, 0)),
             patch("training.trainer_runtime.torch.cuda.device_count", return_value=2),
         ):
             accelerator, devices, strategy = resolve_trainer_hw()
         self.assertEqual(accelerator, "gpu")
         self.assertEqual(devices, 2)
         self.assertEqual(strategy, "ddp_spawn")
+
+    def test_resolve_trainer_hw_falls_back_to_cpu_for_unsupported_cuda_capability(self) -> None:
+        CONFIG["trainer_devices"] = 1
+        CONFIG["trainer_strategy"] = "auto"
+        with (
+            patch("training.trainer_runtime.torch.cuda.is_available", return_value=True),
+            patch("training.trainer_runtime.torch.cuda.get_device_capability", return_value=(6, 0)),
+        ):
+            accelerator, devices, strategy = resolve_trainer_hw()
+        self.assertEqual(accelerator, "cpu")
+        self.assertEqual(devices, 1)
+        self.assertEqual(strategy, "auto")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,14 @@ def resolve_trainer_hw() -> tuple[str, int, str]:
     requested_devices = cfg_int("trainer_devices")
     strategy = cfg_str("trainer_strategy")
     if torch.cuda.is_available():
+        capability = torch.cuda.get_device_capability(0)
+        if int(capability[0]) < 7:
+            log(
+                "Detected CUDA device with compute capability "
+                f"sm_{int(capability[0])}{int(capability[1])}, unsupported by current torch build. "
+                "Falling back to CPU.",
+            )
+            return "cpu", 1, "auto"
         available = max(1, torch.cuda.device_count())
         devices = min(requested_devices, available)
         if requested_devices > available:
