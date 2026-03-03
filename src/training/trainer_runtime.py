@@ -30,11 +30,19 @@ def resolve_trainer_hw() -> tuple[str, int, str]:
             log(
                 f"Requested {requested_devices} GPU(s), but only {available} available. Using {devices}.",
             )
-        if strategy == "auto" and devices > 1:
+        # Avoid distributed rendezvous on single-GPU environments (common in hosted notebooks)
+        # when CLI flags request ddp/ddp_spawn unconditionally.
+        if devices <= 1 and strategy in {"ddp", "ddp_spawn"}:
+            log(f"Requested strategy '{strategy}' requires >1 GPU. Falling back to 'auto'.")
+            strategy = "auto"
+        elif strategy == "auto" and devices > 1:
             strategy = "ddp"
         return "gpu", devices, strategy
     if requested_devices > 1:
         log("CUDA not available, forcing devices=1 on CPU.")
+    if strategy in {"ddp", "ddp_spawn"}:
+        log(f"Requested strategy '{strategy}' on CPU. Falling back to 'auto'.")
+        strategy = "auto"
     return "cpu", 1, strategy
 
 
