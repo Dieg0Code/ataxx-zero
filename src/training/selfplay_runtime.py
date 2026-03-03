@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import heapq
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -282,7 +284,14 @@ def execute_self_play(
     add_noise = cfg_bool("add_noise")
     rng = np.random.default_rng(seed=cfg_int("seed") + iteration)
     selfplay_workers = cfg_int("selfplay_workers")
-    log(f"[Iteration {iteration}] Self-play episodes: {episodes}", verbose_only=True)
+    progress_every_s = max(5.0, cfg_float("selfplay_progress_every_s"))
+    episode_timeout_s = max(0.0, cfg_float("selfplay_episode_timeout_s"))
+    selfplay_start = time.perf_counter()
+    last_progress_log_s = selfplay_start
+    log(
+        f"[Iteration {iteration}] self-play start episodes={episodes} sims={cfg_int('mcts_sims')} "
+        f"workers={selfplay_workers}",
+    )
     curriculum_mix = get_curriculum_mix(iteration)
     log(
         "  Opponent mix: "
@@ -353,6 +362,9 @@ def execute_self_play(
             }
             with ProcessPoolExecutor(
                 max_workers=max_workers,
+                # Forking after CUDA/DDP warmup can deadlock on Linux notebooks.
+                # We force "spawn" to keep self-play workers reliable on Kaggle.
+                mp_context=mp.get_context("spawn"),
                 initializer=_init_selfplay_process_worker,
                 initargs=(
                     model_state_dict,
@@ -361,20 +373,83 @@ def execute_self_play(
                     cfg_int("mcts_sims"),
                 ),
             ) as executor:
-                for (
-                    (_, opponent_type, heuristic_level, _),
-                    episode_result,
-                ) in zip(
-                    episode_specs,
-                    executor.map(_run_episode_in_process_worker, worker_payloads),
-                    strict=True,
+                futures: dict[Future[tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]], tuple[int, str, str]] = {}
+                submitted_at: dict[
+                    Future[tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]],
+                    float,
+                ] = {}
+                ordered_results: list[
+                    tuple[int, str, str, list[tuple[np.ndarray, np.ndarray, int]], int, int]
+                ] = []
+                for idx, ((_, opponent_type, heuristic_level, _), payload) in enumerate(
+                    zip(episode_specs, worker_payloads, strict=True),
+                    start=1,
                 ):
-                    game_history, winner, turn_idx = episode_result
+                    future = executor.submit(_run_episode_in_process_worker, payload)
+                    futures[future] = (idx, opponent_type, heuristic_level)
+                    submitted_at[future] = time.perf_counter()
+
+                pending = set(futures)
+                while pending:
+                    done, pending = wait(
+                        pending,
+                        timeout=progress_every_s,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    now_s = time.perf_counter()
+                    if not done:
+                        if (now_s - last_progress_log_s) >= progress_every_s:
+                            log(
+                                f"[Iteration {iteration}] self-play progress "
+                                f"{len(ordered_results)}/{episodes} elapsed={now_s - selfplay_start:.0f}s",
+                            )
+                            last_progress_log_s = now_s
+                        if episode_timeout_s <= 0.0:
+                            continue
+                        oldest_pending_s = max(now_s - submitted_at[fut] for fut in pending)
+                        if oldest_pending_s <= episode_timeout_s:
+                            continue
+                        raise TimeoutError(
+                            "Parallel self-play stalled: "
+                            f"oldest pending episode exceeded {episode_timeout_s:.0f}s.",
+                        )
+
+                    for future in done:
+                        idx, opponent_type, heuristic_level = futures[future]
+                        game_history, winner, turn_idx = future.result()
+                        ordered_results.append(
+                            (
+                                idx,
+                                opponent_type,
+                                heuristic_level,
+                                game_history,
+                                winner,
+                                turn_idx,
+                            )
+                        )
+                        submitted_at.pop(future, None)
+
+                    if (now_s - last_progress_log_s) >= progress_every_s:
+                        log(
+                            f"[Iteration {iteration}] self-play progress "
+                            f"{len(ordered_results)}/{episodes} elapsed={now_s - selfplay_start:.0f}s",
+                        )
+                        last_progress_log_s = now_s
+
+                ordered_results.sort(key=lambda item: item[0])
+                for (
+                    _idx,
+                    opponent_type,
+                    heuristic_level,
+                    game_history,
+                    winner,
+                    turn_idx,
+                ) in ordered_results:
                     episode_results.append(
                         (opponent_type, heuristic_level, game_history, winner, turn_idx)
                     )
             used_parallel = True
-            log(f"  Self-play process workers active: {max_workers}", verbose_only=True)
+            log(f"[Iteration {iteration}] self-play process workers active: {max_workers}")
         except Exception as exc:
             handle_parallel_selfplay_failure(exc)
             episode_results.clear()
@@ -392,6 +467,13 @@ def execute_self_play(
                 model_player=model_player,
             )
             episode_results.append((opponent_type, heuristic_level, game_history, winner, turn_idx))
+            now_s = time.perf_counter()
+            if (now_s - last_progress_log_s) >= progress_every_s:
+                log(
+                    f"[Iteration {iteration}] self-play progress "
+                    f"{len(episode_results)}/{episodes} elapsed={now_s - selfplay_start:.0f}s",
+                )
+                last_progress_log_s = now_s
 
     for episode_idx, (opponent_type, heuristic_level, game_history, winner, turn_idx) in enumerate(
         episode_results,

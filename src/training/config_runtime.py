@@ -91,6 +91,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "eval_sims": 400,
     "eval_heuristic_level": "hard",
     "selfplay_workers": 8,
+    "selfplay_progress_every_s": 120.0,
+    "selfplay_episode_timeout_s": 1800.0,
     "compile_model": True,
     "quiet_mode": False,
     "warmup_games": 600,
@@ -158,6 +160,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-games", type=int, default=None)
     parser.add_argument("--eval-sims", type=int, default=None)
     parser.add_argument("--selfplay-workers", type=int, default=None)
+    parser.add_argument("--selfplay-progress-every-s", type=float, default=None)
+    parser.add_argument("--selfplay-episode-timeout-s", type=float, default=None)
     parser.add_argument("--allow-selfplay-fallback", action="store_true")
     parser.add_argument("--allow-hf-upload-errors", action="store_true")
     parser.add_argument("--warmup-games", type=int, default=None)
@@ -264,6 +268,10 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["eval_sims"] = max(8, args.eval_sims)
     if args.selfplay_workers is not None:
         CONFIG["selfplay_workers"] = max(1, args.selfplay_workers)
+    if args.selfplay_progress_every_s is not None:
+        CONFIG["selfplay_progress_every_s"] = max(5.0, args.selfplay_progress_every_s)
+    if args.selfplay_episode_timeout_s is not None:
+        CONFIG["selfplay_episode_timeout_s"] = max(0.0, args.selfplay_episode_timeout_s)
     if args.allow_selfplay_fallback:
         CONFIG["fail_on_selfplay_parallel_error"] = False
     if args.allow_hf_upload_errors:
@@ -356,6 +364,10 @@ def validate_config() -> None:
         raise ValueError("CONFIG['max_pending_hf_uploads'] must be > 0.")
     if cfg_float("hf_upload_future_timeout_s") <= 0.0:
         raise ValueError("CONFIG['hf_upload_future_timeout_s'] must be > 0.")
+    if cfg_float("selfplay_progress_every_s") <= 0.0:
+        raise ValueError("CONFIG['selfplay_progress_every_s'] must be > 0.")
+    if cfg_float("selfplay_episode_timeout_s") < 0.0:
+        raise ValueError("CONFIG['selfplay_episode_timeout_s'] must be >= 0.")
 
     opp_sum = (
         cfg_float("opponent_self_prob")
