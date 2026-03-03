@@ -247,6 +247,15 @@ def history_to_examples(
     return examples
 
 
+def handle_parallel_selfplay_failure(exc: Exception) -> None:
+    if cfg_bool("fail_on_selfplay_parallel_error"):
+        raise RuntimeError(
+            "Process self-play failed with parallel workers. "
+            "Aborting instead of silently falling back to sequential mode.",
+        ) from exc
+    log(f"  Process self-play failed, falling back to sequential mode: {exc}")
+
+
 def execute_self_play(
     system: AtaxxZero,
     buffer: ReplayBuffer,
@@ -367,9 +376,7 @@ def execute_self_play(
             used_parallel = True
             log(f"  Self-play process workers active: {max_workers}", verbose_only=True)
         except Exception as exc:
-            log(
-                f"  Process self-play failed, falling back to sequential mode: {exc}",
-            )
+            handle_parallel_selfplay_failure(exc)
             episode_results.clear()
 
     if not used_parallel:
@@ -422,4 +429,5 @@ def execute_self_play(
 
 __all__ = [
     "execute_self_play",
+    "handle_parallel_selfplay_failure",
 ]

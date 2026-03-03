@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -275,6 +276,26 @@ def ensure_hf_ready(checkpointer: HuggingFaceCheckpointer | None) -> None:
     )
 
 
+def drain_completed_hf_uploads(
+    futures: list[Future[None]],
+    *,
+    fail_on_error: bool,
+) -> list[Future[None]]:
+    """Return pending futures while surfacing completed upload failures early."""
+    pending: list[Future[None]] = []
+    for future in futures:
+        if not future.done():
+            pending.append(future)
+            continue
+        try:
+            future.result()
+        except Exception as exc:
+            if fail_on_error:
+                raise RuntimeError("HF upload future failed. Aborting early.") from exc
+            log(f"HF upload failed (continuing): {exc}")
+    return pending
+
+
 def should_save_iteration_checkpoint(iteration: int, total_iterations: int, save_every: int) -> bool:
     """Always persist the final iteration even when it is not divisible by save_every."""
     if iteration >= total_iterations:
@@ -286,6 +307,7 @@ __all__ = [
     "HuggingFaceCheckpointer",
     "cleanup_local_checkpoints",
     "cleanup_old_log_versions",
+    "drain_completed_hf_uploads",
     "ensure_hf_ready",
     "init_hf_checkpointer",
     "should_save_iteration_checkpoint",

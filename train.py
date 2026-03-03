@@ -26,6 +26,7 @@ from training.callbacks import OptimizerStateTransfer  # noqa: E402
 from training.checkpointing import (  # noqa: E402
     cleanup_local_checkpoints,
     cleanup_old_log_versions,
+    drain_completed_hf_uploads,
     ensure_hf_ready,
     init_hf_checkpointer,
     should_save_iteration_checkpoint,
@@ -349,6 +350,8 @@ def main() -> None:
 
     try:
         for iteration in range(start_iteration + 1, iterations + 1):
+            if hf_upload_futures:
+                hf_upload_futures = drain_completed_hf_uploads(hf_upload_futures, fail_on_error=cfg_bool("fail_on_hf_upload_error"))
             epoch_pulse.set_iteration(iteration)
             selfplay_start = time.perf_counter()
             selfplay_stats = execute_self_play(
@@ -358,6 +361,8 @@ def main() -> None:
                 device=device,
             )
             selfplay_s = time.perf_counter() - selfplay_start
+            if len(buffer) == 0:
+                raise RuntimeError("Replay buffer is empty after self-play; aborting early.")
 
             train_loader = _build_train_loader(buffer, device=device)
             val_loader = _build_val_loader(buffer, device=device)
@@ -409,10 +414,7 @@ def main() -> None:
                         best_path = checkpoint_dir / "best_eval.ckpt"
                         trainer.save_checkpoint(str(best_path))
                 except Exception as exc:
-                    monitor.log_warning(
-                        iteration=iteration,
-                        message=f"eval failed, continuing training: {exc}",
-                    )
+                    monitor.log_warning(iteration=iteration, message=f"eval failed, continuing training: {exc}")
 
             if not should_save_iteration_checkpoint(
                 iteration=iteration,
@@ -430,10 +432,7 @@ def main() -> None:
                     keep_last_n=cfg_int("keep_last_n_local_checkpoints"),
                 )
             except OSError:
-                monitor.log_warning(
-                    iteration=iteration,
-                    message="local checkpoint save failed.",
-                )
+                monitor.log_warning(iteration=iteration, message="local checkpoint save failed.")
 
             if hf_checkpointer is not None:
                 try:
@@ -458,10 +457,7 @@ def main() -> None:
                             keep_last_n=cfg_int("keep_last_n_hf_checkpoints"),
                         )
                         hf_upload_futures.append(future)
-                        monitor.log_warning(
-                            iteration=iteration,
-                            message=f"HF upload queued for iteration {iteration}.",
-                        )
+                        monitor.log_warning(iteration=iteration, message=f"HF upload queued for iteration {iteration}.")
                     else:
                         hf_checkpointer.upload_checkpoint_files(
                             iteration=iteration,
@@ -470,10 +466,7 @@ def main() -> None:
                             metadata_path=metadata_path,
                             keep_last_n=cfg_int("keep_last_n_hf_checkpoints"),
                         )
-                        monitor.log_warning(
-                            iteration=iteration,
-                            message=f"HF checkpoint uploaded for iteration {iteration}.",
-                        )
+                        monitor.log_warning(iteration=iteration, message=f"HF checkpoint uploaded for iteration {iteration}.")
                 except (OSError, ValueError):
                     monitor.log_warning(iteration=iteration, message="HF upload failed for this iteration.")
             if cfg_bool("export_onnx"):

@@ -73,6 +73,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "mcts_use_amp": True,
     "mcts_cache_size": 100_000,
     "mcts_leaf_batch_size": 32,
+    "fail_on_selfplay_parallel_error": True,
+    "fail_on_hf_upload_error": True,
     "opponent_self_prob": 0.45,
     "opponent_heuristic_prob": 0.5,
     "opponent_random_prob": 0.05,
@@ -154,6 +156,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-games", type=int, default=None)
     parser.add_argument("--eval-sims", type=int, default=None)
     parser.add_argument("--selfplay-workers", type=int, default=None)
+    parser.add_argument("--allow-selfplay-fallback", action="store_true")
+    parser.add_argument("--allow-hf-upload-errors", action="store_true")
     parser.add_argument("--warmup-games", type=int, default=None)
     parser.add_argument("--warmup-epochs", type=int, default=None)
     parser.add_argument(
@@ -256,6 +260,10 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["eval_sims"] = max(8, args.eval_sims)
     if args.selfplay_workers is not None:
         CONFIG["selfplay_workers"] = max(1, args.selfplay_workers)
+    if args.allow_selfplay_fallback:
+        CONFIG["fail_on_selfplay_parallel_error"] = False
+    if args.allow_hf_upload_errors:
+        CONFIG["fail_on_hf_upload_error"] = False
     if args.warmup_games is not None:
         CONFIG["warmup_games"] = max(0, args.warmup_games)
     if args.warmup_epochs is not None:
