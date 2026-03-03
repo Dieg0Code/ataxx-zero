@@ -103,6 +103,19 @@ class TestApiMove(unittest.TestCase):
         self.assertEqual(body["mode"], "heuristic_normal")
         self.assertIsInstance(body["action_idx"], int)
 
+    def test_move_endpoint_supports_new_heuristic_levels(self) -> None:
+        app = create_app()
+        client = TestClient(app)
+        board = AtaxxBoard()
+
+        for mode in ("heuristic_apex", "heuristic_gambit", "heuristic_sentinel"):
+            payload = MoveRequest(board=board_to_state(board), mode=mode).model_dump()
+            response = client.post("/api/v1/gameplay/move", json=payload)
+            self.assertEqual(response.status_code, 200, msg=f"unexpected failure for mode={mode}")
+            body = response.json()
+            self.assertEqual(body["mode"], mode)
+            self.assertIsInstance(body["action_idx"], int)
+
     def test_move_endpoint_falls_back_to_heuristic_when_inference_is_unavailable(self) -> None:
         app = create_app()
 
@@ -125,7 +138,7 @@ class TestApiMove(unittest.TestCase):
         self.assertIsInstance(body["action_idx"], int)
 
     def test_move_endpoint_fallback_level_honors_settings(self) -> None:
-        app = create_app(settings=Settings(inference_fallback_heuristic_level="hard"))
+        app = create_app(settings=Settings(inference_fallback_heuristic_level="apex"))
 
         def _unavailable_inference() -> _StubInferenceService:
             raise HTTPException(
@@ -142,7 +155,7 @@ class TestApiMove(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
         body = response.json()
-        self.assertEqual(body["mode"], "heuristic_hard")
+        self.assertEqual(body["mode"], "heuristic_apex")
         self.assertIsInstance(body["action_idx"], int)
 
 

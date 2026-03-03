@@ -138,6 +138,49 @@ class TestApiMatchesBotsIntegration(unittest.TestCase):
         self.assertEqual(created["player2_agent"], "heuristic")
         self.assertTrue(created["rated"])
 
+    def test_advance_bot_supports_exotic_heuristic_level(self) -> None:
+        human = self._register_and_login("botmatch-exotic", "botmatch-exotic@example.com")
+        bot_user_id = self._create_bot_user_with_profile(
+            username="ub_gambitshade_v1",
+            email="ub_gambitshade_v1@example.com",
+            agent_type=AgentType.HEURISTIC,
+            heuristic_level="gambit",
+            model_mode=None,
+        )
+
+        create_resp = self.client.post(
+            "/api/v1/matches",
+            json={
+                "queue_type": "vs_ai",
+                "rated": False,
+                "player2_id": bot_user_id,
+                "player1_agent": "human",
+                "player2_agent": "human",
+            },
+            headers={"Authorization": f"Bearer {human['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        game_id = create_resp.json()["id"]
+
+        first_move = self.client.post(
+            f"/api/v1/matches/{game_id}/moves",
+            json={
+                "pass_turn": False,
+                "move": {"r1": 0, "c1": 0, "r2": 1, "c2": 1},
+            },
+            headers={"Authorization": f"Bearer {human['access_token']}"},
+        )
+        self.assertEqual(first_move.status_code, 201)
+
+        advance_resp = self.client.post(
+            f"/api/v1/matches/{game_id}/advance-bot",
+            headers={"Authorization": f"Bearer {human['access_token']}"},
+        )
+        self.assertEqual(advance_resp.status_code, 200)
+        payload = advance_resp.json()
+        self.assertTrue(payload["applied"])
+        self.assertEqual(payload["move"]["mode"], "heuristic_gambit")
+
     def test_identity_bots_lists_only_enabled_profiles(self) -> None:
         user = self._register_and_login("botlist-user", "botlist-user@example.com")
         self._create_bot_user_with_profile(

@@ -5,7 +5,12 @@ from uuid import UUID
 
 import numpy as np
 
-from agents.heuristic import heuristic_move
+from agents.heuristic import (
+    DEFAULT_HEURISTIC_LEVEL,
+    heuristic_mode_from_level,
+    heuristic_move,
+    is_supported_heuristic_level,
+)
 from api.db.enums import (
     AgentType,
     GameSource,
@@ -321,10 +326,10 @@ class MatchesService:
         value: float
         selected_move: tuple[int, int, int, int] | None
         if profile.agent_type == AgentType.HEURISTIC:
-            level = profile.heuristic_level or "normal"
-            if level not in {"easy", "normal", "hard"}:
+            level = profile.heuristic_level or DEFAULT_HEURISTIC_LEVEL
+            if not is_supported_heuristic_level(level):
                 raise ValueError("Invalid heuristic_level for bot profile.")
-            mode = f"heuristic_{level}"
+            mode = heuristic_mode_from_level(level)
             selected_move = heuristic_move(
                 board=board,
                 rng=np.random.default_rng(),

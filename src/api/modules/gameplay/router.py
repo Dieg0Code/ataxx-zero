@@ -49,13 +49,22 @@ GAMEPLAY_SERVICE_DEP = Depends(get_gameplay_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
 AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
 logger = logging.getLogger(__name__)
-FALLBACK_MODE_BY_LEVEL: dict[
-    Literal["easy", "normal", "hard"],
-    Literal["heuristic_easy", "heuristic_normal", "heuristic_hard"],
-] = {
+HeuristicLevel = Literal["easy", "normal", "hard", "apex", "gambit", "sentinel"]
+HeuristicMode = Literal[
+    "heuristic_easy",
+    "heuristic_normal",
+    "heuristic_hard",
+    "heuristic_apex",
+    "heuristic_gambit",
+    "heuristic_sentinel",
+]
+FALLBACK_MODE_BY_LEVEL: dict[HeuristicLevel, HeuristicMode] = {
     "easy": "heuristic_easy",
     "normal": "heuristic_normal",
     "hard": "heuristic_hard",
+    "apex": "heuristic_apex",
+    "gambit": "heuristic_gambit",
+    "sentinel": "heuristic_sentinel",
 }
 
 

@@ -61,7 +61,14 @@ class Settings(BaseSettings):
     inference_mcts_sims: int = 160
     inference_c_puct: float = 1.5
     inference_prefer_onnx: bool = True
-    inference_fallback_heuristic_level: Literal["easy", "normal", "hard"] = "easy"
+    inference_fallback_heuristic_level: Literal[
+        "easy",
+        "normal",
+        "hard",
+        "apex",
+        "gambit",
+        "sentinel",
+    ] = "easy"
 
     # Auth/JWT
     auth_jwt_secret: str = ""

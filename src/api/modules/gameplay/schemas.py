@@ -69,6 +69,9 @@ class MoveRequest(BaseModel):
         "heuristic_easy",
         "heuristic_normal",
         "heuristic_hard",
+        "heuristic_apex",
+        "heuristic_gambit",
+        "heuristic_sentinel",
         "random",
     ] = "fast"
 
@@ -101,6 +104,9 @@ class MoveResponse(BaseModel):
         "heuristic_easy",
         "heuristic_normal",
         "heuristic_hard",
+        "heuristic_apex",
+        "heuristic_gambit",
+        "heuristic_sentinel",
         "random",
     ]
 
@@ -136,6 +142,9 @@ class ManualMoveRequest(BaseModel):
         "heuristic_easy",
         "heuristic_normal",
         "heuristic_hard",
+        "heuristic_apex",
+        "heuristic_gambit",
+        "heuristic_sentinel",
         "random",
     ] = "manual"
 

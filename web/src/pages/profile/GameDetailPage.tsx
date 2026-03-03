@@ -78,6 +78,15 @@ function modeLabel(mode: string | null | undefined): string {
   if (mode === "heuristic_hard") {
     return "heuristica hard";
   }
+  if (mode === "heuristic_apex") {
+    return "heuristica apex";
+  }
+  if (mode === "heuristic_gambit") {
+    return "heuristica gambit";
+  }
+  if (mode === "heuristic_sentinel") {
+    return "heuristica sentinel";
+  }
   return mode;
 }
 

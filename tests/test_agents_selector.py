@@ -49,7 +49,7 @@ class TestAgentsSelector(unittest.TestCase):
 
     def test_heuristic_levels_return_legal_moves(self) -> None:
         board = AtaxxBoard()
-        for level in ("easy", "normal", "hard"):
+        for level in ("easy", "normal", "hard", "apex", "gambit", "sentinel"):
             move, _ = pick_ai_move(
                 board=board,
                 agent="heuristic",

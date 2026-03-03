@@ -196,6 +196,39 @@ class TestApiIdentityIntegration(unittest.TestCase):
         self.assertEqual(bot_row["agent_type"], "model")
         self.assertEqual(bot_row["model_version_id"], model_version_id)
 
+    def test_admin_can_upsert_exotic_heuristic_bot_profile(self) -> None:
+        admin = self._register_and_login("id-admin-heu", "id-admin-heu@example.com")
+        self._promote_user_to_admin(admin["user_id"])
+        target = self._register_and_login("id-heu-bot", "id-heu-bot@example.com")
+
+        upsert = self.client.post(
+            "/api/v1/identity/bot-profiles",
+            json={
+                "user_id": target["user_id"],
+                "agent_type": "heuristic",
+                "heuristic_level": "sentinel",
+                "enabled": True,
+            },
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(upsert.status_code, 201)
+        payload = upsert.json()
+        self.assertEqual(payload["agent_type"], "heuristic")
+        self.assertEqual(payload["heuristic_level"], "sentinel")
+
+        bots_resp = self.client.get(
+            "/api/v1/identity/bots?limit=20&offset=0",
+            headers={"Authorization": f"Bearer {admin['access_token']}"},
+        )
+        self.assertEqual(bots_resp.status_code, 200)
+        items = bots_resp.json()["items"]
+        bot_row = next((item for item in items if item["user_id"] == target["user_id"]), None)
+        self.assertIsNotNone(bot_row)
+        if bot_row is None:
+            self.fail("Bot row not found in playable bot list")
+        self.assertEqual(bot_row["agent_type"], "heuristic")
+        self.assertEqual(bot_row["heuristic_level"], "sentinel")
+
     def _register_and_login(self, username: str, email: str) -> dict[str, str]:
         register = self.client.post(
             "/api/v1/auth/register",

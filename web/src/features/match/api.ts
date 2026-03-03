@@ -7,6 +7,9 @@ export type MoveMode =
   | "heuristic_easy"
   | "heuristic_normal"
   | "heuristic_hard"
+  | "heuristic_apex"
+  | "heuristic_gambit"
+  | "heuristic_sentinel"
   | "random";
 
 type MovePayload = {

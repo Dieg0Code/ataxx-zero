@@ -143,7 +143,14 @@ class BotProfileUpsertRequest(BaseModel):
 
     user_id: UUID
     agent_type: Literal["heuristic", "model"]
-    heuristic_level: Literal["easy", "normal", "hard"] | None = None
+    heuristic_level: Literal[
+        "easy",
+        "normal",
+        "hard",
+        "apex",
+        "gambit",
+        "sentinel",
+    ] | None = None
     model_mode: Literal["fast", "strong"] | None = None
     model_version_id: UUID | None = None
     enabled: bool = True

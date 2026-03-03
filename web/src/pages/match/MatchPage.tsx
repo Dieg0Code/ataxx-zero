@@ -21,7 +21,8 @@ import {
 import { AppShell } from "@/widgets/layout/AppShell";
 import { useAuth } from "@/app/providers/useAuth";
 import {
-  fetchPublicPlayers,
+  prefetchPublicPlayers,
+  readPrefetchedPublicPlayers,
   type PlayableBot,
   type PublicPlayer,
 } from "@/features/identity/api";
@@ -72,6 +73,8 @@ const P2_MOVE_SFX_MIN_GAP_MS = 70;
 const RESOLVED_MOVE_HIGHLIGHT_MS = 1200;
 const PERSIST_MAX_RETRIES = 3;
 const PERSIST_BASE_BACKOFF_MS = 200;
+const BOARD_TILT_MAX_DEG = 2.8;
+const BOARD_SPOTLIGHT_IDLE = { x: 50, y: 44, active: false } as const;
 const PERSIST_SNAPSHOT_KEY = "ataxx.persist.snapshot.v1";
 const MATCHMAKING_PRESET_KEY = "ataxx.matchmaking.preset.v1";
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
@@ -100,7 +103,8 @@ const panelSectionVariants: Variants = {
 
 type OpponentProfile = "model" | "heuristic";
 type InfectionMask = Record<string, { oldCell: Cell; revealAt: number }>;
-type HeuristicLevel = "easy" | "normal" | "hard";
+const HEURISTIC_LEVELS = ["easy", "normal", "hard", "apex", "gambit", "sentinel"] as const;
+type HeuristicLevel = (typeof HEURISTIC_LEVELS)[number];
 type InfectionBurst = { key: string; until: number };
 type MatchMode = "play" | "spectate";
 type ControllerKind = "human" | "remote_human" | "model" | "heuristic";
@@ -131,6 +135,12 @@ type OutgoingInvitation = {
   opponentUsername: string;
   rated: boolean;
 };
+
+type BoardSpotlight = {
+  x: number;
+  y: number;
+  active: boolean;
+};
 type RatingBaseline = {
   seasonId: string;
   rating: number;
@@ -150,6 +160,20 @@ function playerOptionLabel(player: PublicPlayer): string {
   return `${player.username} [humano]`;
 }
 
+function toPlayableBots(players: PublicPlayer[]): PlayableBot[] {
+  return players
+    .filter((player) => player.is_bot && player.agent_type !== null)
+    .map((player) => ({
+      user_id: player.user_id,
+      username: player.username,
+      bot_kind: player.bot_kind,
+      agent_type: player.agent_type ?? "heuristic",
+      heuristic_level: player.heuristic_level,
+      model_mode: player.model_mode,
+      enabled: player.enabled ?? true,
+    }));
+}
+
 function cellKey(row: number, col: number): string {
   return `${row}:${col}`;
 }
@@ -157,6 +181,13 @@ function cellKey(row: number, col: number): string {
 function keyToCell(key: string): { row: number; col: number } {
   const [rRaw, cRaw] = key.split(":");
   return { row: Number(rRaw), col: Number(cRaw) };
+}
+
+function isHeuristicLevel(value: string | null | undefined): value is HeuristicLevel {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return HEURISTIC_LEVELS.includes(value as HeuristicLevel);
 }
 
 function cellCenterPercent(index: number): number {
@@ -326,6 +357,7 @@ export function MatchPage(): JSX.Element {
   const [lastResolvedMove, setLastResolvedMove] = useState<Move | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [boardTilt, setBoardTilt] = useState({ x: 0, y: 0 });
+  const [boardSpotlight, setBoardSpotlight] = useState<BoardSpotlight>(BOARD_SPOTLIGHT_IDLE);
   const [introCountdown, setIntroCountdown] = useState(INTRO_COUNTDOWN_START);
   const [showIntro, setShowIntro] = useState(false);
   const [matchStarted, setMatchStarted] = useState(false);
@@ -374,6 +406,7 @@ export function MatchPage(): JSX.Element {
   const previewHalfMovesRef = useRef<number | null>(null);
   const boardTiltRafRef = useRef<number | null>(null);
   const boardTiltPendingRef = useRef({ x: 0, y: 0 });
+  const boardSpotlightPendingRef = useRef<BoardSpotlight>(BOARD_SPOTLIGHT_IDLE);
   const lastResolvedMoveTimerRef = useRef<number | null>(null);
   const gameplayWsRef = useRef<WebSocket | null>(null);
   const lastWsPlyRef = useRef(-1);
@@ -934,11 +967,7 @@ export function MatchPage(): JSX.Element {
       if (preset.mode === "fast" || preset.mode === "strong") {
         setMode(preset.mode);
       }
-      if (
-        preset.heuristicLevel === "easy" ||
-        preset.heuristicLevel === "normal" ||
-        preset.heuristicLevel === "hard"
-      ) {
+      if (isHeuristicLevel(preset.heuristicLevel)) {
         setHeuristicLevel(preset.heuristicLevel);
       }
       if (preset.guestMode) {
@@ -1003,6 +1032,7 @@ export function MatchPage(): JSX.Element {
     let mounted = true;
     if (!isAuthenticated || accessToken === null) {
       if (mounted) {
+        setPublicPlayers([]);
         setBotAccounts([]);
         setSelectedP1BotId("");
         setSelectedP2BotId("");
@@ -1011,29 +1041,31 @@ export function MatchPage(): JSX.Element {
         mounted = false;
       };
     }
+    const applyPlayers = (players: PublicPlayer[]): void => {
+      setPublicPlayers(players);
+      const bots = toPlayableBots(players);
+      setBotAccounts(bots);
+      if (bots.length > 0) {
+        setSelectedP1BotId((prev) => (prev.length > 0 ? prev : bots[0].user_id));
+        setSelectedP2BotId((prev) => (prev.length > 0 ? prev : bots[0].user_id));
+      }
+    };
+
+    const cachedPlayers = readPrefetchedPublicPlayers();
+    if (cachedPlayers !== null) {
+      applyPlayers(cachedPlayers);
+    }
+
     void (async () => {
       try {
-        const players = await fetchPublicPlayers(accessToken, { limit: 200 });
+        const players = await prefetchPublicPlayers(accessToken, {
+          limit: 200,
+          maxAgeMs: cachedPlayers !== null ? 0 : undefined,
+        });
         if (!mounted) {
           return;
         }
-        setPublicPlayers(players);
-        const bots: PlayableBot[] = players
-          .filter((player) => player.is_bot && player.agent_type !== null)
-          .map((player) => ({
-            user_id: player.user_id,
-            username: player.username,
-            bot_kind: player.bot_kind,
-            agent_type: player.agent_type ?? "heuristic",
-            heuristic_level: player.heuristic_level,
-            model_mode: player.model_mode,
-            enabled: player.enabled ?? true,
-          }));
-        setBotAccounts(bots);
-        if (bots.length > 0) {
-          setSelectedP1BotId((prev) => (prev.length > 0 ? prev : bots[0].user_id));
-          setSelectedP2BotId((prev) => (prev.length > 0 ? prev : bots[0].user_id));
-        }
+        applyPlayers(players);
       } catch {
         if (mounted) {
           setPublicPlayers([]);
@@ -1235,11 +1267,7 @@ export function MatchPage(): JSX.Element {
       return;
     }
     setP1Profile("heuristic");
-    if (
-      selectedP1Bot.heuristic_level === "easy" ||
-      selectedP1Bot.heuristic_level === "normal" ||
-      selectedP1Bot.heuristic_level === "hard"
-    ) {
+    if (isHeuristicLevel(selectedP1Bot.heuristic_level)) {
       setP1HeuristicLevel(selectedP1Bot.heuristic_level);
     }
   }, [selectedP1Bot]);
@@ -1256,11 +1284,7 @@ export function MatchPage(): JSX.Element {
       return;
     }
     setOpponentProfile("heuristic");
-    if (
-      selectedP2Bot.heuristic_level === "easy" ||
-      selectedP2Bot.heuristic_level === "normal" ||
-      selectedP2Bot.heuristic_level === "hard"
-    ) {
+    if (isHeuristicLevel(selectedP2Bot.heuristic_level)) {
       setHeuristicLevel(selectedP2Bot.heuristic_level);
     }
   }, [selectedP2Bot]);
@@ -2221,9 +2245,16 @@ export function MatchPage(): JSX.Element {
     const rect = event.currentTarget.getBoundingClientRect();
     const nx = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
     const ny = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
+    const spotlightX = Math.max(12, Math.min(88, 50 + nx * 21));
+    const spotlightY = Math.max(12, Math.min(88, 45 + ny * 18));
     boardTiltPendingRef.current = {
-      x: -(ny * 2.1),
-      y: nx * 2.1,
+      x: -(ny * BOARD_TILT_MAX_DEG),
+      y: nx * BOARD_TILT_MAX_DEG,
+    };
+    boardSpotlightPendingRef.current = {
+      x: spotlightX,
+      y: spotlightY,
+      active: true,
     };
     if (boardTiltRafRef.current !== null) {
       return;
@@ -2231,7 +2262,13 @@ export function MatchPage(): JSX.Element {
     boardTiltRafRef.current = window.requestAnimationFrame(() => {
       boardTiltRafRef.current = null;
       setBoardTilt(boardTiltPendingRef.current);
+      setBoardSpotlight(boardSpotlightPendingRef.current);
     });
+  }, []);
+
+  const onBoardMouseEnter = useCallback(() => {
+    boardSpotlightPendingRef.current = { x: 50, y: 44, active: true };
+    setBoardSpotlight(boardSpotlightPendingRef.current);
   }, []);
 
   const onBoardMouseLeave = useCallback(() => {
@@ -2240,7 +2277,9 @@ export function MatchPage(): JSX.Element {
       boardTiltRafRef.current = null;
     }
     boardTiltPendingRef.current = { x: 0, y: 0 };
+    boardSpotlightPendingRef.current = BOARD_SPOTLIGHT_IDLE;
     setBoardTilt({ x: 0, y: 0 });
+    setBoardSpotlight(BOARD_SPOTLIGHT_IDLE);
   }, []);
 
   return (
@@ -2359,27 +2398,57 @@ export function MatchPage(): JSX.Element {
               </div>
             ) : null}
             <motion.div
-              className={`relative aspect-square max-w-[620px] [perspective:1000px] ${isQueueMatchView ? "mx-auto" : ""}`}
+              className={`relative aspect-square max-w-[620px] [perspective:1200px] ${isQueueMatchView ? "mx-auto" : ""}`}
+              onMouseEnter={onBoardMouseEnter}
               onMouseMove={onBoardMouseMove}
               onMouseLeave={onBoardMouseLeave}
             >
               <motion.div
-                className="relative grid h-full grid-cols-7 gap-1 rounded-xl border border-zinc-800 bg-[radial-gradient(circle_at_50%_-20%,rgba(132,204,22,0.22),rgba(0,0,0,0))] p-2"
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-[6%] bottom-0 z-0 h-12 rounded-[50%] bg-black/65 blur-xl"
+                animate={{
+                  opacity: boardSpotlight.active ? 0.48 : 0.36,
+                  x: boardTilt.y * 2.4,
+                  y: -boardTilt.x * 1.3,
+                  scale: boardSpotlight.active ? 1.04 : 1,
+                }}
+                transition={{
+                  opacity: { duration: 0.25, ease: "easeOut" },
+                  x: { type: "spring", stiffness: 120, damping: 20, mass: 0.75 },
+                  y: { type: "spring", stiffness: 120, damping: 20, mass: 0.75 },
+                  scale: { duration: 0.25, ease: "easeOut" },
+                }}
+              />
+              <motion.div
+                className="relative grid h-full grid-cols-7 gap-1 rounded-xl border border-zinc-800 bg-[radial-gradient(circle_at_50%_-20%,rgba(132,204,22,0.22),rgba(0,0,0,0))] p-2 will-change-transform [transform-style:preserve-3d]"
                 animate={{
                   rotateX: boardTilt.x,
                   rotateY: boardTilt.y,
+                  scale: boardSpotlight.active ? 1.008 : 1,
+                  y: boardSpotlight.active ? -1.4 : 0,
                   boxShadow: [
-                    "0 0 0px rgba(132,204,22,0.0)",
-                    "0 0 24px rgba(132,204,22,0.14)",
-                    "0 0 0px rgba(132,204,22,0.0)",
+                    "0 18px 40px rgba(0,0,0,0.34), 0 0 0px rgba(132,204,22,0.0)",
+                    "0 22px 46px rgba(0,0,0,0.38), 0 0 28px rgba(132,204,22,0.16)",
+                    "0 18px 40px rgba(0,0,0,0.34), 0 0 0px rgba(132,204,22,0.0)",
                   ],
                 }}
                 transition={{
-                  rotateX: { type: "spring", stiffness: 180, damping: 22, mass: 0.7 },
-                  rotateY: { type: "spring", stiffness: 180, damping: 22, mass: 0.7 },
-                  boxShadow: { duration: 4.2, repeat: Infinity, ease: "easeInOut" },
+                  rotateX: { type: "spring", stiffness: 130, damping: 20, mass: 0.8 },
+                  rotateY: { type: "spring", stiffness: 130, damping: 20, mass: 0.8 },
+                  scale: { duration: 0.24, ease: "easeOut" },
+                  y: { duration: 0.24, ease: "easeOut" },
+                  boxShadow: { duration: 4.6, repeat: Infinity, ease: "easeInOut" },
                 }}
               >
+                <motion.div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 z-20 rounded-xl"
+                  style={{
+                    background: `radial-gradient(circle at ${boardSpotlight.x}% ${boardSpotlight.y}%, rgba(190,242,100,0.32), rgba(190,242,100,0.07) 26%, rgba(0,0,0,0) 58%)`,
+                  }}
+                  animate={{ opacity: boardSpotlight.active ? [0.62, 0.85, 0.62] : [0.34, 0.48, 0.34] }}
+                  transition={{ duration: boardSpotlight.active ? 2.2 : 3.4, repeat: Infinity, ease: "easeInOut" }}
+                />
                 <motion.div
                   className="pointer-events-none absolute inset-0 z-20 rounded-xl opacity-35"
                   style={{

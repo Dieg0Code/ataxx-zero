@@ -23,7 +23,7 @@ type ActiveSeasonResponse = {
 type BotProfileResponse = {
   user_id: string;
   agent_type: "heuristic" | "model";
-  heuristic_level: "easy" | "normal" | "hard" | null;
+  heuristic_level: "easy" | "normal" | "hard" | "apex" | "gambit" | "sentinel" | null;
   model_mode: "fast" | "strong" | null;
   enabled: boolean;
 };
@@ -97,7 +97,7 @@ export type PersistedGameWsEvent =
 
 type PersistedOpponentAgent = "model" | "heuristic";
 export type PersistedMoveMode = MoveMode | "manual";
-type HeuristicLevel = "easy" | "normal" | "hard";
+type HeuristicLevel = "easy" | "normal" | "hard" | "apex" | "gambit" | "sentinel";
 
 export type CreatePersistedGameOptions = {
   ranked?: boolean;

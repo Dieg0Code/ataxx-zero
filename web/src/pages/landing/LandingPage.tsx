@@ -14,7 +14,7 @@ import {
   type QueueWsEvent,
 } from "@/features/matchmaking/api";
 import { fetchPersistedGameSummary } from "@/features/match/persistence";
-import { fetchPublicPlayers } from "@/features/identity/api";
+import { fetchPublicPlayers, prefetchPublicPlayers } from "@/features/identity/api";
 import { AppShell } from "@/widgets/layout/AppShell";
 import { fetchActiveSeason, fetchLeaderboard } from "@/features/ranking/api";
 import { assetUrl } from "@/shared/lib/assets";
@@ -364,7 +364,7 @@ export function LandingPage(): JSX.Element {
         .filter((name) => name.length > 0 && name.toLowerCase() !== normalized.toLowerCase());
       const rivalPool = rankedBotNames.length > 0 ? rankedBotNames : [...GUEST_BOT_FALLBACK];
       const rivalName = rivalPool[Math.floor(Math.random() * rivalPool.length)] ?? "rival";
-      const heuristicLevels = ["easy", "normal", "hard"] as const;
+      const heuristicLevels = ["easy", "normal", "hard", "apex", "gambit", "sentinel"] as const;
       const level = heuristicLevels[Math.floor(Math.random() * heuristicLevels.length)] ?? "normal";
       sessionStorage.setItem(
         MATCHMAKING_PRESET_KEY,
@@ -474,6 +474,13 @@ export function LandingPage(): JSX.Element {
       setRejectingMatch(false);
     }
   };
+
+  const prefetchMatchSetup = useCallback((): void => {
+    if (!isAuthenticated || accessToken === null) {
+      return;
+    }
+    void prefetchPublicPlayers(accessToken, { limit: 200 });
+  }, [accessToken, isAuthenticated]);
 
   return (
     <AppShell>
@@ -759,7 +766,12 @@ export function LandingPage(): JSX.Element {
                   size="sm"
                   className="h-9 border border-zinc-800/70 bg-transparent px-2 text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-100"
                 >
-                  <Link to="/match">
+                  <Link
+                    to="/match"
+                    onMouseEnter={prefetchMatchSetup}
+                    onFocus={prefetchMatchSetup}
+                    onTouchStart={prefetchMatchSetup}
+                  >
                     Configuracion avanzada
                     <ArrowRight className="ml-2 h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
                   </Link>
