@@ -35,7 +35,6 @@ import {
   type PersistedGameWsEvent,
   storeManualMove,
   type PersistedMoveMode,
-  type PersistedReplay,
 } from "@/features/match/persistence";
 import { createHumanInvitation, fetchInvitationGame } from "@/features/matches/api";
 import {
@@ -311,7 +310,6 @@ export function MatchPage(): JSX.Element {
   const [persistError, setPersistError] = useState<string | null>(null);
   const [retryingPersist, setRetryingPersist] = useState(false);
   const [pendingPersistCount, setPendingPersistCount] = useState(0);
-  const [replay, setReplay] = useState<PersistedReplay | null>(null);
   const [matchMode, setMatchMode] = useState<MatchMode>("play");
   const [opponentProfile, setOpponentProfile] = useState<OpponentProfile>("model");
   const [heuristicLevel, setHeuristicLevel] = useState<HeuristicLevel>("normal");
@@ -1263,7 +1261,6 @@ export function MatchPage(): JSX.Element {
     setPersistError(null);
     setRetryingPersist(false);
     clearPendingQueue(null);
-    setReplay(null);
     setPreviewMove(null);
     setPreviewUntil(0);
     setInfectionMask({});
@@ -1648,7 +1645,6 @@ export function MatchPage(): JSX.Element {
     setPersistError(null);
     setRetryingPersist(false);
     clearPendingQueue(null);
-    setReplay(null);
     setPreviewMove(null);
     setPreviewUntil(0);
     setInfectionMask({});
@@ -1980,7 +1976,6 @@ export function MatchPage(): JSX.Element {
     setThinking(true);
     try {
       const payload = await fetchPersistedReplay(accessToken, persistedGameId);
-      setReplay(payload);
       setPersistStatus(`Replay sincronizado. Jugadas: ${payload.moves.length}`);
       setPersistError(null);
       emitFlash("Replay sincronizada.", "success");
@@ -3152,18 +3147,18 @@ export function MatchPage(): JSX.Element {
 
             <motion.div className="space-y-2" variants={panelSectionVariants} custom={0.18}>
               <div className="rounded-md border border-zinc-700 bg-zinc-950 p-2 hover:border-zinc-500">
-                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Estado de sesion</p>
+                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Estado</p>
                 <p className="mt-1 text-xs text-zinc-300">
                   {thinking ? `IA activa (${sideController(board.current_player)}) pensando...` : status}
                 </p>
               </div>
               <div className="rounded-md border border-zinc-700 bg-zinc-950 p-2 hover:border-zinc-500">
-                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Guardado</p>
+                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Sincronizacion</p>
                 <p className="mt-1 text-[11px] text-zinc-300">
                   {isSpectate ? (
-                    "Modo espectador: sin historial remoto."
+                    "Espectador: sin historial remoto."
                   ) : isAuthenticated ? (
-                    "Guardado automatico activo al iniciar partida."
+                    "Sincronizacion remota habilitada."
                   ) : (
                     <>
                       Modo local activo.{" "}
@@ -3174,12 +3169,16 @@ export function MatchPage(): JSX.Element {
                     </>
                   )}
                 </p>
-                {persistedGameId !== null && (
-                  <p className="mt-2 break-all text-[11px] text-zinc-400">
-                    ID partida: <span className="text-zinc-100">{persistedGameId}</span>
-                  </p>
-                )}
-                <p className="mt-1 text-[11px] text-zinc-500">{persistStatus}</p>
+                <p className="mt-1 truncate text-[11px] text-zinc-500" title={persistStatus}>
+                  {persistStatus}
+                </p>
+                <div className="mt-2 h-8">
+                  {persistedGameId !== null ? (
+                    <Button asChild type="button" size="sm" variant="secondary" className="h-8 w-full">
+                      <Link to={`/profile/games/${persistedGameId}`}>Ver replay</Link>
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             </motion.div>
             {persistError !== null && (
@@ -3203,24 +3202,6 @@ export function MatchPage(): JSX.Element {
                       {retryingPersist ? "Reintentando..." : "Reintentar sincronizacion"}
                     </Button>
                   </div>
-                )}
-              </div>
-            )}
-            {replay !== null && (
-              <div className="rounded-md border border-zinc-700 bg-zinc-950 p-2 text-[11px] text-zinc-300">
-                <p>
-                  Estado replay: <span className="text-zinc-100">{replay.game.status}</span>
-                </p>
-                <p>
-                  Ganador: <span className="text-zinc-100">{replay.game.winner_side ?? "-"}</span>
-                </p>
-                <p>
-                  Total jugadas: <span className="text-zinc-100">{replay.moves.length}</span>
-                </p>
-                {persistedGameId !== null && (
-                  <Button asChild type="button" size="sm" variant="secondary" className="mt-2 w-full">
-                    <Link to={`/profile/games/${persistedGameId}`}>Ver replay detallado</Link>
-                  </Button>
                 )}
               </div>
             )}
