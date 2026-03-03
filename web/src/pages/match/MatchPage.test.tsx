@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersistedGameWsEvent } from "@/features/match/persistence";
 import type { BoardState } from "@/features/match/types";
 import { MatchPage } from "@/pages/match/MatchPage";
+import { createInitialBoard } from "@/features/match/rules";
 
 const predictAIMoveMock = vi.fn();
 const createPersistedGameMock = vi.fn();
@@ -527,5 +528,126 @@ describe("MatchPage queued human vs human", () => {
     await waitFor(() => {
       expect(fetchPersistedGameSummaryMock).toHaveBeenCalledWith("token-h2h", "game-h2h-next");
     });
+  }, 15000);
+
+  it("ignores stale websocket move snapshots to avoid ghost preview effects", async () => {
+    sessionStorage.setItem(
+      "ataxx.matchmaking.match.v1",
+      JSON.stringify({
+        gameId: "game-h2h",
+        matchedWith: "human",
+        source: "queue",
+        createdAt: Date.now(),
+      }),
+    );
+
+    let wsEventHandler: ((event: PersistedGameWsEvent) => void) | null = null;
+    openPersistedGameSocketMock.mockImplementation((...args: unknown[]) => {
+      wsEventHandler = args[2] as (event: PersistedGameWsEvent) => void;
+      return {
+        close: vi.fn(),
+        onclose: null,
+        onmessage: null,
+      };
+    });
+
+    const view = render(<MatchPage />);
+    await waitFor(() => {
+      expect(openPersistedGameSocketMock).toHaveBeenCalled();
+    });
+
+    if (wsEventHandler === null) {
+      throw new Error("Expected websocket handler to be initialized.");
+    }
+
+    const staleBoardAfter = createInitialBoard();
+    wsEventHandler({
+      type: "game.move.applied",
+      game_id: "game-h2h",
+      move: {
+        r1: 0,
+        c1: 0,
+        r2: 1,
+        c2: 1,
+        ply: 1,
+        board_after: staleBoardAfter,
+      },
+      game: {
+        id: "game-h2h",
+        status: "in_progress",
+        winner_side: null,
+        winner_user_id: null,
+        termination_reason: null,
+      },
+    });
+
+    await waitFor(
+      () => {
+        const ghostPreviewLine = view.container.querySelector("line[stroke='rgba(132,204,22,0.85)']");
+        expect(ghostPreviewLine).toBeNull();
+      },
+      { timeout: 240 },
+    );
+  }, 15000);
+
+  it("does not draw preview lines for fresh websocket move events", async () => {
+    sessionStorage.setItem(
+      "ataxx.matchmaking.match.v1",
+      JSON.stringify({
+        gameId: "game-h2h",
+        matchedWith: "human",
+        source: "queue",
+        createdAt: Date.now(),
+      }),
+    );
+
+    let wsEventHandler: ((event: PersistedGameWsEvent) => void) | null = null;
+    openPersistedGameSocketMock.mockImplementation((...args: unknown[]) => {
+      wsEventHandler = args[2] as (event: PersistedGameWsEvent) => void;
+      return {
+        close: vi.fn(),
+        onclose: null,
+        onmessage: null,
+      };
+    });
+
+    const view = render(<MatchPage />);
+    await waitFor(() => {
+      expect(openPersistedGameSocketMock).toHaveBeenCalled();
+    });
+
+    if (wsEventHandler === null) {
+      throw new Error("Expected websocket handler to be initialized.");
+    }
+
+    const boardAfter = createInitialBoard();
+    boardAfter.half_moves = 1;
+    wsEventHandler({
+      type: "game.move.applied",
+      game_id: "game-h2h",
+      move: {
+        r1: 0,
+        c1: 0,
+        r2: 1,
+        c2: 1,
+        ply: 0,
+        board_after: boardAfter,
+      },
+      game: {
+        id: "game-h2h",
+        status: "in_progress",
+        winner_side: null,
+        winner_user_id: null,
+        termination_reason: null,
+      },
+    });
+
+    await waitFor(
+      () => {
+        const previewLine = view.container.querySelector("line[stroke='rgba(132,204,22,0.85)']");
+        expect(previewLine).toBeNull();
+      },
+      { timeout: 240 },
+    );
   }, 15000);
 });

@@ -16,6 +16,7 @@ import { useAuth } from "@/app/providers/useAuth";
 import { InvitationList } from "@/features/matches/InvitationList";
 import { useInvitations } from "@/features/matches/useInvitations";
 import { assetUrl } from "@/shared/lib/assets";
+import { playSfx, primeSfx, primeSfxOnFirstInteraction } from "@/shared/lib/sfx";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/utils";
@@ -87,19 +88,6 @@ function FlashIcon({ tone }: { tone: FlashTone }): JSX.Element {
   return <Info className="h-4 w-4" />;
 }
 
-function playSfx(path: string, volume = 0.24): void {
-  try {
-    const audio = new Audio(path);
-    audio.volume = Math.max(0, Math.min(1, volume));
-    const playResult = audio.play();
-    if (playResult && typeof playResult.catch === "function") {
-      void playResult.catch(() => {});
-    }
-  } catch {
-    // ignore browser/runtime audio errors
-  }
-}
-
 type AppShellProps = {
   children: React.ReactNode;
   onNavigateAttempt?: (to: string) => boolean;
@@ -138,6 +126,11 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
       }),
     [pendingInvitations],
   );
+
+  useEffect(() => {
+    primeSfx([INVITE_SFX_PATH], 3);
+    primeSfxOnFirstInteraction([INVITE_SFX_PATH], 3);
+  }, []);
 
   useEffect(() => {
     const previous = previousInviteCountRef.current;

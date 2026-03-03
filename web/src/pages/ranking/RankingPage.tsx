@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Crown,
   Loader2,
@@ -20,16 +20,28 @@ import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 
 const PAGE_SIZE = 10;
+const SEARCH_DEBOUNCE_MS = 250;
 
 export function RankingPage(): JSX.Element {
   const [offset, setOffset] = useState(0);
   const [competitorFilter, setCompetitorFilter] = useState<"all" | "humans" | "bots">("all");
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const { user, isAuthenticated } = useAuth();
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [searchInput]);
 
   const seasonQuery = useQuery({
     queryKey: ["activeSeason"],
     queryFn: fetchActiveSeason,
+    staleTime: 60_000,
   });
 
   const seasonId = seasonQuery.data?.id;
@@ -41,12 +53,15 @@ export function RankingPage(): JSX.Element {
         query: search,
       }),
     enabled: Boolean(seasonId),
+    placeholderData: keepPreviousData,
+    staleTime: 15_000,
   });
 
   const myRatingQuery = useQuery({
     queryKey: ["my-rating", user?.id, seasonId],
     queryFn: () => fetchUserRating(user!.id, seasonId!),
     enabled: Boolean(user?.id && seasonId),
+    staleTime: 30_000,
   });
 
   const entries = useMemo(() => leaderboardQuery.data?.items ?? [], [leaderboardQuery.data]);
@@ -56,8 +71,8 @@ export function RankingPage(): JSX.Element {
   );
   const isInitialLeaderboardLoading = leaderboardQuery.isLoading && entries.length === 0;
   const showEmptyState = !leaderboardQuery.isLoading && !leaderboardQuery.isError && entries.length === 0;
-  const emptyStateMessage = search.trim().length > 0
-    ? `No hay resultados para "${search.trim()}".`
+  const emptyStateMessage = searchInput.trim().length > 0
+    ? `No hay resultados para "${searchInput.trim()}".`
     : competitorFilter === "bots"
       ? "No hay bots en esta temporada."
       : competitorFilter === "humans"
@@ -210,10 +225,10 @@ export function RankingPage(): JSX.Element {
                   </div>
                   <input
                     type="search"
-                    value={search}
+                    value={searchInput}
                     onChange={(event) => {
                       setOffset(0);
-                      setSearch(event.target.value);
+                      setSearchInput(event.target.value);
                     }}
                     placeholder="Buscar jugador..."
                     className="h-8 w-full max-w-[260px] rounded-md border border-line bg-zinc-950/80 px-2 text-xs text-textMain outline-none transition focus:border-primary/60"

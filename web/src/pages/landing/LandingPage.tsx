@@ -18,6 +18,7 @@ import { fetchPublicPlayers } from "@/features/identity/api";
 import { AppShell } from "@/widgets/layout/AppShell";
 import { fetchActiveSeason, fetchLeaderboard } from "@/features/ranking/api";
 import { assetUrl } from "@/shared/lib/assets";
+import { playSfx, primeSfx, primeSfxOnFirstInteraction } from "@/shared/lib/sfx";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
@@ -74,19 +75,6 @@ function saveMatchedGame(gameId: string, matchedWith: MatchedWith): void {
   sessionStorage.setItem(MATCHMAKING_MATCH_KEY, JSON.stringify(payload));
 }
 
-function playSfx(path: string, volume = 0.28): void {
-  try {
-    const audio = new Audio(path);
-    audio.volume = Math.max(0, Math.min(1, volume));
-    const playResult = audio.play();
-    if (playResult && typeof playResult.catch === "function") {
-      void playResult.catch(() => {});
-    }
-  } catch {
-    // Ignore browser/runtime audio errors.
-  }
-}
-
 export function LandingPage(): JSX.Element {
   const { isAuthenticated, accessToken } = useAuth();
   const navigate = useNavigate();
@@ -117,6 +105,12 @@ export function LandingPage(): JSX.Element {
   const [guestQueueing, setGuestQueueing] = useState(false);
   const joinRequestSeqRef = useRef(0);
   const guestQueueCancelledRef = useRef(false);
+
+  useEffect(() => {
+    const sfxPaths = Object.values(QUEUE_SFX);
+    primeSfx(sfxPaths, 4);
+    primeSfxOnFirstInteraction(sfxPaths, 4);
+  }, []);
 
   const seasonQuery = useQuery({
     queryKey: ["home-active-season"],

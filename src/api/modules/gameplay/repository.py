@@ -214,10 +214,9 @@ class GameRepository:
         return move
 
     async def next_ply(self, game_id: UUID) -> int:
-        stmt = select(GameMove).where(GameMove.game_id == game_id)
+        stmt = select(func.count()).select_from(GameMove).where(GameMove.game_id == game_id)
         result = await self.session.execute(stmt)
-        moves = list(result.scalars().all())
-        return len(moves)
+        return int(result.scalar_one())
 
     async def list_moves(self, game_id: UUID, limit: int = 200) -> list[GameMove]:
         stmt = select(GameMove).where(GameMove.game_id == game_id).limit(limit)

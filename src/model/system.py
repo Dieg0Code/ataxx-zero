@@ -137,6 +137,7 @@ class AtaxxZero(pl.LightningModule):
         batch_coerced = self._coerce_train_batch(batch_obj=batch_obj, caller="training_step")
         metrics = self._common_step(batch_coerced)
         if getattr(self, "_trainer", None) is not None:
+            sync_dist = bool(getattr(self.trainer, "world_size", 1) > 1)
             self.log_dict(
                 {
                     "train/loss": metrics["loss"],
@@ -148,6 +149,7 @@ class AtaxxZero(pl.LightningModule):
                 prog_bar=True,
                 on_step=False,
                 on_epoch=True,
+                sync_dist=sync_dist,
             )
         return metrics["loss"]
 
@@ -160,6 +162,7 @@ class AtaxxZero(pl.LightningModule):
         batch_coerced = self._coerce_train_batch(batch_obj=batch_obj, caller="validation_step")
         metrics = self._common_step(batch_coerced)
         if getattr(self, "_trainer", None) is not None:
+            sync_dist = bool(getattr(self.trainer, "world_size", 1) > 1)
             self.log_dict(
                 {
                     "val/loss": metrics["loss"],
@@ -171,6 +174,7 @@ class AtaxxZero(pl.LightningModule):
                 prog_bar=True,
                 on_step=False,
                 on_epoch=True,
+                sync_dist=sync_dist,
             )
         return metrics["loss"]
 
@@ -179,7 +183,8 @@ class AtaxxZero(pl.LightningModule):
         if len(optimizers) == 0:
             return
         current_lr = float(optimizers[0].param_groups[0]["lr"])
-        self.log("train/lr", current_lr, prog_bar=False, on_epoch=True)
+        sync_dist = bool(getattr(self.trainer, "world_size", 1) > 1)
+        self.log("train/lr", current_lr, prog_bar=False, on_epoch=True, sync_dist=sync_dist)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = optim.AdamW(

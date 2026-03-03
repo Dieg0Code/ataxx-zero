@@ -78,15 +78,18 @@ def _resolve_settings(request: Request) -> Settings:
 async def _to_game_response(
     gameplay_service: GameplayService,
     game: Game,
+    *,
+    include_usernames: bool = True,
 ) -> GameResponse:
-    get_usernames = getattr(gameplay_service, "get_player_usernames", None)
-    if get_usernames is None:
-        player1_username, player2_username = None, None
-    else:
-        player1_username, player2_username = await get_usernames(game)
     validated = GameResponse.model_validate(game)
-    validated.player1_username = player1_username
-    validated.player2_username = player2_username
+    if include_usernames:
+        get_usernames = getattr(gameplay_service, "get_player_usernames", None)
+        if get_usernames is None:
+            player1_username, player2_username = None, None
+        else:
+            player1_username, player2_username = await get_usernames(game)
+        validated.player1_username = player1_username
+        validated.player2_username = player2_username
     return validated
 
 
@@ -94,11 +97,21 @@ async def _broadcast_move_applied(
     gameplay_service: GameplayService,
     game_id: UUID,
     stored_move: StoredMoveResponse,
+    *,
+    game: Game | None = None,
 ) -> None:
-    game = await gameplay_service.get_game(game_id)
-    if game is None:
+    broadcast_game = game
+    if broadcast_game is None:
+        broadcast_game = await gameplay_service.get_game(game_id)
+    if broadcast_game is None:
         return
-    game_payload = await _to_game_response(gameplay_service, game)
+    # Move streaming happens very frequently; avoid per-move username lookups to
+    # keep DB round-trips low and the board responsive under load.
+    game_payload = await _to_game_response(
+        gameplay_service,
+        broadcast_game,
+        include_usernames=False,
+    )
     await gameplay_ws_hub.broadcast(
         game_id=game_id,
         payload={
@@ -484,7 +497,7 @@ async def post_game_move(
 
     inference = inference_service.predict(board=board, mode=request.mode)
     try:
-        stored = await gameplay_service.record_inference_move(
+        stored, updated_game = await gameplay_service.record_inference_move(
             game_id=game_id,
             board=board,
             inference=inference,
@@ -506,6 +519,7 @@ async def post_game_move(
         gameplay_service=gameplay_service,
         game_id=game_id,
         stored_move=payload,
+        game=updated_game,
     )
     return payload
 
@@ -533,7 +547,7 @@ async def post_game_manual_move(
 
     move = (request.move.r1, request.move.c1, request.move.r2, request.move.c2)
     try:
-        stored = await gameplay_service.record_manual_move(
+        stored, updated_game = await gameplay_service.record_manual_move(
             game_id=game_id,
             board=board,
             move=move,
@@ -561,6 +575,7 @@ async def post_game_manual_move(
         gameplay_service=gameplay_service,
         game_id=game_id,
         stored_move=payload,
+        game=updated_game,
     )
     return payload
 

@@ -52,6 +52,7 @@ import {
   opponent,
 } from "@/features/match/rules";
 import { assetUrl } from "@/shared/lib/assets";
+import { playSfx, primeSfx, primeSfxOnFirstInteraction } from "@/shared/lib/sfx";
 import type { BoardState, Cell, Move } from "@/features/match/types";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -76,7 +77,7 @@ const MATCHMAKING_AUTOQUEUE_KEY = "ataxx.matchmaking.autoqueue.v1";
 const GUEST_PROFILE_KEY = "ataxx.guest.profile.v1";
 const SFX = {
   uiClick: assetUrl("sfx/ui_click.ogg"),
-  uiHover: assetUrl("sfx/start.ogg"),
+  uiHover: assetUrl("sfx/ui_click.ogg"),
   start: assetUrl("sfx/start.ogg"),
   moveLand: assetUrl("sfx/move_preview.ogg"),
   infect: assetUrl("sfx/infect.ogg"),
@@ -198,19 +199,6 @@ function loadGuestProfileUsername(): string | null {
     return cleaned.length > 0 ? cleaned : null;
   } catch {
     return null;
-  }
-}
-
-function playSfx(path: string, volume = 0.3): void {
-  try {
-    const audio = new Audio(path);
-    audio.volume = Math.max(0, Math.min(1, volume));
-    const playResult = audio.play();
-    if (playResult && typeof playResult.catch === "function") {
-      void playResult.catch(() => {});
-    }
-  } catch {
-    // ignore audio runtime errors in unsupported environments
   }
 }
 
@@ -410,6 +398,12 @@ export function MatchPage(): JSX.Element {
     },
     [location.hash, location.pathname, location.search, navigate],
   );
+
+  useEffect(() => {
+    const sfxPaths = Object.values(SFX);
+    primeSfx(sfxPaths, 4);
+    primeSfxOnFirstInteraction(sfxPaths, 4);
+  }, []);
 
   useEffect(() => {
     if (accessToken !== null) {
@@ -1377,19 +1371,20 @@ export function MatchPage(): JSX.Element {
 
       if (event.move.board_after !== null) {
         const boardAfter = event.move.board_after as BoardState;
-        // Ignore stale snapshots: delayed WS frames used to overwrite a newer local board.
-        if (boardAfter.half_moves >= latestBoardRef.current.half_moves) {
-          setBoard(boardAfter);
+        const currentHalfMoves = latestBoardRef.current.half_moves;
+        // Ignore WS echoes of moves already applied locally; they used to retrigger
+        // preview lines/highlights and looked like "ghost" actions.
+        if (boardAfter.half_moves <= currentHalfMoves) {
+          return;
         }
+        setBoard(boardAfter);
       }
       const remoteMove =
         event.move.r1 === null || event.move.c1 === null || event.move.r2 === null || event.move.c2 === null
           ? null
           : { r1: event.move.r1, c1: event.move.c1, r2: event.move.r2, c2: event.move.c2 };
-      if (remoteMove !== null) {
-        setPreviewMove(remoteMove);
-        setPreviewUntil(Date.now() + AI_PREVIEW_MS);
-      }
+      // WS notifications arrive after persistence, not before the move execution;
+      // drawing "preview" for them feels like phantom/late intent lines.
       setResolvedMoves((prev) => Math.max(prev, event.move.ply + 1));
       setLastResolvedMove(remoteMove);
 

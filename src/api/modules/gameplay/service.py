@@ -252,7 +252,7 @@ class GameplayService:
         board: AtaxxBoard,
         inference: InferenceResult,
         actor_user: User,
-    ) -> GameMove:
+    ) -> tuple[GameMove, Game]:
         game = await self.ensure_can_view_game(game_id=game_id, actor_user=actor_user)
 
         ply = await self.game_repository.next_ply(game_id)
@@ -286,7 +286,7 @@ class GameplayService:
         )
         stored_move = await self.game_repository.create_move(move)
         await self._update_game_state(game=game, board_after=scratch)
-        return stored_move
+        return stored_move, game
 
     async def list_game_moves(self, game_id: UUID, limit: int = 200) -> list[GameMove]:
         game = await self.game_repository.get_by_id(game_id)
@@ -301,7 +301,7 @@ class GameplayService:
         move: tuple[int, int, int, int],
         actor_user: User,
         mode: str = "manual",
-    ) -> GameMove:
+    ) -> tuple[GameMove, Game]:
         game = await self.ensure_can_view_game(game_id=game_id, actor_user=actor_user)
 
         legal_moves = board.get_valid_moves()
@@ -333,7 +333,7 @@ class GameplayService:
             )
         )
         await self._update_game_state(game=game, board_after=scratch)
-        return stored_move
+        return stored_move, game
 
     async def _update_game_state(self, game: Game, board_after: AtaxxBoard) -> None:
         changed = False
