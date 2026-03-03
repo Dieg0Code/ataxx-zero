@@ -54,6 +54,13 @@ type FlashState = {
   flash?: string | { message: string; tone?: FlashTone };
 };
 
+function isNavRouteActive(currentPath: string, navPath: string): boolean {
+  if (navPath === "/") {
+    return currentPath === "/";
+  }
+  return currentPath === navPath || currentPath.startsWith(`${navPath}/`);
+}
+
 function normalizeFlash(state: unknown): FlashMessage | null {
   if (typeof state !== "object" || state === null) {
     return null;
@@ -415,7 +422,7 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
 
         <nav className="mt-3 flex items-center gap-1 overflow-visible border-t border-zinc-800/80 pt-2">
           {NAV_ITEMS.map((item) => {
-            const active = location.pathname === item.to;
+            const active = isNavRouteActive(location.pathname, item.to);
             const Icon = item.icon;
             return (
               <Button

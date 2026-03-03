@@ -13,6 +13,7 @@ const fetchPersistedGameSummaryMock = vi.fn();
 const fetchPersistedReplayMock = vi.fn();
 const openPersistedGameSocketMock = vi.fn();
 const fetchPublicPlayersMock = vi.fn();
+const readPrefetchedPublicPlayersMock = vi.fn();
 const createHumanInvitationMock = vi.fn();
 const fetchInvitationGameMock = vi.fn();
 const rejectInvitationMock = vi.fn();
@@ -47,7 +48,8 @@ vi.mock("@/features/match/persistence", () => ({
 }));
 
 vi.mock("@/features/identity/api", () => ({
-  fetchPublicPlayers: (...args: unknown[]) => fetchPublicPlayersMock(...args),
+  prefetchPublicPlayers: (...args: unknown[]) => fetchPublicPlayersMock(...args),
+  readPrefetchedPublicPlayers: (...args: unknown[]) => readPrefetchedPublicPlayersMock(...args),
 }));
 
 vi.mock("@/features/matches/api", () => ({
@@ -89,6 +91,7 @@ describe("MatchPage spectator mode", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    readPrefetchedPublicPlayersMock.mockReset();
     createHumanInvitationMock.mockReset();
     fetchInvitationGameMock.mockReset();
     rejectInvitationMock.mockReset();
@@ -152,6 +155,7 @@ describe("MatchPage spectator mode", () => {
         enabled: true,
       },
     ]);
+    readPrefetchedPublicPlayersMock.mockReturnValue(null);
     useAuthMock.mockReturnValue({
       user: { id: "spectator", username: "spec" },
       loading: false,
@@ -207,6 +211,33 @@ describe("MatchPage spectator mode", () => {
     expect(screen.getByLabelText("Jugador P1")).toBeDisabled();
     expect(screen.getByLabelText("Jugador P2")).toBeDisabled();
   }, 15000);
+
+  it("uses prefetched player catalog immediately before refreshing in background", async () => {
+    const cachedPlayers = [
+      {
+        user_id: "bot-cached",
+        is_bot: true,
+        username: "CachedBot",
+        bot_kind: "heuristic",
+        agent_type: "heuristic",
+        heuristic_level: "normal",
+        model_mode: null,
+        enabled: true,
+      },
+    ];
+    readPrefetchedPublicPlayersMock.mockReturnValueOnce(cachedPlayers);
+    fetchPublicPlayersMock.mockResolvedValueOnce(cachedPlayers);
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Rival (jugador)")).toHaveValue("bot-cached");
+    });
+    expect(fetchPublicPlayersMock).toHaveBeenCalledWith("token-spec", {
+      limit: 200,
+      maxAgeMs: 0,
+    });
+  });
 });
 
 describe("MatchPage automatic persistence", () => {
@@ -220,6 +251,7 @@ describe("MatchPage automatic persistence", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    readPrefetchedPublicPlayersMock.mockReset();
     createHumanInvitationMock.mockReset();
     fetchInvitationGameMock.mockReset();
     rejectInvitationMock.mockReset();
@@ -283,6 +315,7 @@ describe("MatchPage automatic persistence", () => {
         enabled: true,
       },
     ]);
+    readPrefetchedPublicPlayersMock.mockReturnValue(null);
     useAuthMock.mockReturnValue({
       user: { id: "u1", username: "demo" },
       loading: false,
@@ -420,6 +453,7 @@ describe("MatchPage queued human vs human", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    readPrefetchedPublicPlayersMock.mockReset();
     createHumanInvitationMock.mockReset();
     fetchInvitationGameMock.mockReset();
     rejectInvitationMock.mockReset();
@@ -483,6 +517,7 @@ describe("MatchPage queued human vs human", () => {
         enabled: true,
       },
     ]);
+    readPrefetchedPublicPlayersMock.mockReturnValue(null);
     useAuthMock.mockReturnValue({
       user: { id: "u2", username: "bravo" },
       loading: false,

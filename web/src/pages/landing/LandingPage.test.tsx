@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LandingPage } from "@/pages/landing/LandingPage";
 import { renderWithProviders } from "@/test/render";
@@ -12,6 +12,7 @@ const acceptMatchedQueueMock = vi.fn();
 const rejectMatchedQueueMock = vi.fn();
 const fetchPersistedGameSummaryMock = vi.fn();
 const fetchPublicPlayersMock = vi.fn();
+const prefetchPublicPlayersMock = vi.fn();
 const useAuthMock = vi.fn();
 
 vi.mock("@/widgets/layout/AppShell", () => ({
@@ -37,6 +38,7 @@ vi.mock("@/features/match/persistence", () => ({
 
 vi.mock("@/features/identity/api", () => ({
   fetchPublicPlayers: (...args: unknown[]) => fetchPublicPlayersMock(...args),
+  prefetchPublicPlayers: (...args: unknown[]) => prefetchPublicPlayersMock(...args),
 }));
 
 vi.mock("@/app/providers/useAuth", () => ({
@@ -54,6 +56,7 @@ describe("LandingPage queue", () => {
     rejectMatchedQueueMock.mockReset();
     fetchPersistedGameSummaryMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    prefetchPublicPlayersMock.mockReset();
     openQueueSocketMock.mockReturnValue({
       close: vi.fn(),
       onmessage: null,
@@ -123,6 +126,7 @@ describe("LandingPage queue", () => {
         enabled: true,
       },
     ]);
+    prefetchPublicPlayersMock.mockResolvedValue([]);
   });
 
   it("shows queue searching status after clicking Buscar partida", async () => {
@@ -190,6 +194,16 @@ describe("LandingPage queue", () => {
     expect(await screen.findByText(/modo invitado/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /entrar como invitado/i })).toBeInTheDocument();
+  });
+
+  it("prefetches player list when hovering advanced configuration link", async () => {
+    renderWithProviders(<LandingPage />, { route: "/" });
+
+    fireEvent.mouseEnter(screen.getByRole("link", { name: /configuracion avanzada/i }));
+
+    await waitFor(() => {
+      expect(prefetchPublicPlayersMock).toHaveBeenCalledWith("token-123", { limit: 200 });
+    });
   });
 
 });

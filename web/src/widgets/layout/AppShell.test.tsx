@@ -128,6 +128,18 @@ describe("AppShell", () => {
     expect(screen.getByText("contenido")).toBeInTheDocument();
   });
 
+  it("marks profile tab active on profile subroutes", () => {
+    renderWithProviders(
+      <AppShell>
+        <div>detalle</div>
+      </AppShell>,
+      { route: "/profile/games/game-123" },
+    );
+
+    expect(screen.getByRole("link", { name: "Perfil" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Inicio" })).not.toHaveAttribute("aria-current");
+  });
+
   it("renders login action when user is not authenticated", () => {
     authState = {
       isAuthenticated: false,
