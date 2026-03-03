@@ -172,6 +172,50 @@ class TestMatchesServiceModelInference(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_create_invitation_prewarms_runtime_for_model_bot(self) -> None:
+        async def _run() -> None:
+            async with self.sessionmaker() as session:
+                service = MatchesService(repository=MatchesRepository(session=session))
+                human = User(username="human-c", email="human-c@example.com", is_active=True)
+                version = ModelVersion(
+                    name="ub_policy_spatial_v2",
+                    checkpoint_uri="checkpoints/policy_spatial_v2.ckpt",
+                    is_active=False,
+                )
+                bot = User(
+                    username="ub_bogonet_warmup",
+                    email="bogonet@example.com",
+                    is_active=True,
+                    is_bot=True,
+                    bot_kind=BotKind.MODEL,
+                    model_version_id=version.id,
+                )
+                session.add(human)
+                session.add(version)
+                session.add(bot)
+                session.add(
+                    BotProfile(
+                        user_id=bot.id,
+                        agent_type=AgentType.MODEL,
+                        model_mode="fast",
+                        enabled=True,
+                    )
+                )
+                await session.commit()
+
+                with patch("api.modules.matches.service.prewarm_model_inference_service") as prewarm:
+                    game = await service.create_invitation(
+                        actor_user_id=human.id,
+                        opponent_user_id=bot.id,
+                        rated=False,
+                    )
+
+                self.assertEqual(game.status, GameStatus.IN_PROGRESS)
+                self.assertEqual(game.player2_agent, AgentType.MODEL)
+                prewarm.assert_called_once()
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

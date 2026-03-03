@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
@@ -28,6 +28,7 @@ import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { deleteMyGame, fetchMyGames, type ProfileGame } from "@/features/profile/api";
+import { fetchPersistedReplay } from "@/features/match/persistence";
 import { InvitationList } from "@/features/matches/InvitationList";
 import { useInvitations } from "@/features/matches/useInvitations";
 import {
@@ -39,6 +40,7 @@ import {
 
 const PAGE_SIZE = 8;
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
+const REPLAY_PREFETCH_COOLDOWN_MS = 45_000;
 
 function isSpectatorView(game: ProfileGame, userId: string): boolean {
   const isParticipant = game.player1_id === userId || game.player2_id === userId;
@@ -174,12 +176,32 @@ export function ProfilePage(): JSX.Element {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [pendingDeleteGame, setPendingDeleteGame] = useState<ProfileGame | null>(null);
   const queryClient = useQueryClient();
+  const replayPrefetchAtRef = useRef<Record<string, number>>({});
   const emitFlash = (message: string, tone: "success" | "warning" | "error" | "info"): void => {
     navigate(`${location.pathname}${location.search}${location.hash}`, {
       replace: true,
       state: { flash: { message, tone } },
     });
   };
+  const prefetchReplayDetail = useCallback(
+    (gameId: string): void => {
+      if (!accessToken) {
+        return;
+      }
+      const now = Date.now();
+      const lastPrefetch = replayPrefetchAtRef.current[gameId] ?? 0;
+      if (now - lastPrefetch < REPLAY_PREFETCH_COOLDOWN_MS) {
+        return;
+      }
+      replayPrefetchAtRef.current[gameId] = now;
+      void queryClient.prefetchQuery({
+        queryKey: ["profile-game-replay", gameId, accessToken],
+        queryFn: () => fetchPersistedReplay(accessToken, gameId),
+        staleTime: 30_000,
+      });
+    },
+    [accessToken, queryClient],
+  );
 
   const createdAt = useMemo(() => {
     if (!user?.created_at) {
@@ -205,6 +227,7 @@ export function ProfilePage(): JSX.Element {
     enabled: Boolean(accessToken),
     includeInitialFetch: true,
     scope: "profile",
+    fallbackPollingMs: 12_000,
   });
 
   const activeSeasonQuery = useQuery({
@@ -670,7 +693,12 @@ export function ProfilePage(): JSX.Element {
                       variant="ghost"
                       className="h-8 px-0 text-lime-200 transition hover:bg-transparent hover:text-lime-100"
                     >
-                      <Link to={`/profile/games/${game.id}`} aria-label={`Detalle ${game.id.slice(0, 8)}`}>
+                      <Link
+                        to={`/profile/games/${game.id}`}
+                        aria-label={`Detalle ${game.id.slice(0, 8)}`}
+                        onMouseEnter={() => prefetchReplayDetail(game.id)}
+                        onFocus={() => prefetchReplayDetail(game.id)}
+                      >
                         <motion.span
                           className="inline-flex items-center gap-1 text-xs tracking-[0.12em] uppercase"
                           initial={{ opacity: 0.86 }}

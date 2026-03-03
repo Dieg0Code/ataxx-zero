@@ -6,6 +6,7 @@ import {
   ArrowRight,
   Bot,
   Brain,
+  Check,
   Crown,
   Gauge,
   RotateCcw,
@@ -36,7 +37,7 @@ import {
   storeManualMove,
   type PersistedMoveMode,
 } from "@/features/match/persistence";
-import { createHumanInvitation, fetchInvitationGame } from "@/features/matches/api";
+import { createHumanInvitation, fetchInvitationGame, rejectInvitation } from "@/features/matches/api";
 import {
   PLAYER_1,
   PLAYER_2,
@@ -63,6 +64,7 @@ const AI_PREVIEW_MS = 420;
 const INFECTION_STEP_MS = 90;
 const INFECTION_BURST_MS = 420;
 const OUTGOING_INVITE_POLL_MS = 4000;
+const INVITE_ACCEPT_TRANSITION_MS = 900;
 const UI_TICK_MS = 120;
 const INTRO_COUNTDOWN_START = 3;
 const HOVER_SFX_MIN_GAP_MS = 120;
@@ -356,6 +358,8 @@ export function MatchPage(): JSX.Element {
     p2: "human" | "model" | "heuristic";
   } | null>(null);
   const [outgoingInvitation, setOutgoingInvitation] = useState<OutgoingInvitation | null>(null);
+  const [inviteAcceptedTransition, setInviteAcceptedTransition] = useState<string | null>(null);
+  const [cancelingOutgoingInvitation, setCancelingOutgoingInvitation] = useState(false);
   const [ratingBaseline, setRatingBaseline] = useState<RatingBaseline | null>(null);
   const [publicPlayers, setPublicPlayers] = useState<PublicPlayer[]>([]);
   const [botAccounts, setBotAccounts] = useState<PlayableBot[]>([]);
@@ -529,6 +533,10 @@ export function MatchPage(): JSX.Element {
   const selectedP2Player = publicPlayers.find((player) => player.user_id === selectedP2BotId) ?? null;
   const selectedP1Bot = botAccounts.find((bot) => bot.user_id === selectedP1BotId) ?? null;
   const selectedP2Bot = botAccounts.find((bot) => bot.user_id === selectedP2BotId) ?? null;
+  const selectedRivalIsHuman = selectedP2Player !== null && !selectedP2Player.is_bot;
+  const inviteFlowEnabled = !isSpectate && queuedGameId === null && selectedRivalIsHuman;
+  const inviteWaitingRoomVisible =
+    !matchStarted && !isSpectate && (outgoingInvitation !== null || inviteAcceptedTransition !== null);
   const rivalName = selectedP2Player?.username ?? guestRivalName ?? "rival";
   const p1DisplayName = isSpectate
     ? selectedP1Player?.username ?? "p1"
@@ -1067,38 +1075,77 @@ export function MatchPage(): JSX.Element {
       return;
     }
     let cancelled = false;
-    const intervalId = window.setInterval(() => {
-      void (async () => {
-        try {
-          const invitation = await fetchInvitationGame(accessToken, outgoingInvitation.gameId);
-          if (cancelled) {
-            return;
-          }
-          if (invitation.status === "in_progress") {
-            setOutgoingInvitation(null);
+    let transitionTimer: number | null = null;
+    const pollInvitation = async (): Promise<void> => {
+      try {
+        const invitation = await fetchInvitationGame(accessToken, outgoingInvitation.gameId);
+        if (cancelled) {
+          return;
+        }
+        if (invitation.status === "in_progress") {
+          setOutgoingInvitation(null);
+          setInviteAcceptedTransition(outgoingInvitation.opponentUsername);
+          setStatus(`${outgoingInvitation.opponentUsername} acepto la invitacion. Entrando a la arena...`);
+          setQueueNotice(`${outgoingInvitation.opponentUsername} acepto la invitacion. Entrando a la arena...`);
+          emitFlash("Invitacion aceptada. Iniciando partida 1v1.", "success");
+          window.clearInterval(intervalId);
+          transitionTimer = window.setTimeout(() => {
+            if (cancelled) {
+              return;
+            }
+            setInviteAcceptedTransition(null);
             setQueuedGameId(invitation.id);
             setQueueRanked(Boolean(invitation.rated));
-            setQueueNotice(`${outgoingInvitation.opponentUsername} acepto la invitacion. Entrando a la arena...`);
             setAutoQueueStart(true);
-            emitFlash("Invitacion aceptada. Iniciando partida 1v1.", "success");
-            return;
-          }
-          if (invitation.status === "aborted") {
-            setOutgoingInvitation(null);
-            setQueueNotice(`${outgoingInvitation.opponentUsername} rechazo la invitacion.`);
-            emitFlash("La invitacion fue rechazada.", "warning");
-            return;
-          }
-          setStatus(`Solicitud enviada a ${outgoingInvitation.opponentUsername}. Espera su respuesta...`);
-        } catch {
-          // Keep polling; temporary network errors should not close invitation flow.
+          }, INVITE_ACCEPT_TRANSITION_MS);
+          return;
         }
-      })();
+        if (invitation.status === "aborted") {
+          setOutgoingInvitation(null);
+          setInviteAcceptedTransition(null);
+          setStatus(`${outgoingInvitation.opponentUsername} rechazo la invitacion.`);
+          setQueueNotice(`${outgoingInvitation.opponentUsername} rechazo la invitacion.`);
+          emitFlash("La invitacion fue rechazada.", "warning");
+          window.clearInterval(intervalId);
+          return;
+        }
+        setStatus(`Invitacion enviada a ${outgoingInvitation.opponentUsername}. Esperando respuesta...`);
+      } catch {
+        // Keep polling; temporary network errors should not close invitation flow.
+      }
+    };
+    const intervalId = window.setInterval(() => {
+      void pollInvitation();
     }, OUTGOING_INVITE_POLL_MS);
+    void pollInvitation();
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      if (transitionTimer !== null) {
+        window.clearTimeout(transitionTimer);
+      }
     };
+  }, [accessToken, emitFlash, isAuthenticated, outgoingInvitation]);
+
+  const cancelOutgoingInvite = useCallback(async (): Promise<void> => {
+    if (outgoingInvitation === null) {
+      return;
+    }
+    const invitation = outgoingInvitation;
+    setCancelingOutgoingInvitation(true);
+    setOutgoingInvitation(null);
+    setInviteAcceptedTransition(null);
+    setStatus("Invitacion cancelada. Puedes configurar otra partida.");
+    setQueueNotice(`Invitacion cancelada para ${invitation.opponentUsername}.`);
+    if (isAuthenticated && accessToken !== null) {
+      try {
+        await rejectInvitation(accessToken, invitation.gameId);
+      } catch {
+        // Best effort cancel on backend; local flow is already closed.
+      }
+    }
+    emitFlash("Invitacion cancelada.", "info");
+    setCancelingOutgoingInvitation(false);
   }, [accessToken, emitFlash, isAuthenticated, outgoingInvitation]);
 
   useEffect(() => {
@@ -1274,6 +1321,8 @@ export function MatchPage(): JSX.Element {
     setResolvedMoves(0);
     setQueueNotice(null);
     setOutgoingInvitation(null);
+    setInviteAcceptedTransition(null);
+    setCancelingOutgoingInvitation(false);
     setAutoQueueStart(false);
     setQueueRanked(false);
     setQueuedGameId(null);
@@ -1598,13 +1647,18 @@ export function MatchPage(): JSX.Element {
   ]);
 
   const startMatch = useCallback(async (): Promise<boolean> => {
-    const selectedRivalIsHuman = selectedP2Player !== null && !selectedP2Player.is_bot;
-    if (queuedGameId === null && selectedRivalIsHuman) {
+    if (!isSpectate && queuedGameId === null && selectedRivalIsHuman) {
       if (!isAuthenticated || accessToken === null || selectedP2Player === null) {
         setStatus("Inicia sesion para enviar una solicitud 1v1.");
         emitFlash("Debes iniciar sesion para invitar jugadores humanos.", "warning");
         return false;
       }
+      if (outgoingInvitation !== null) {
+        setStatus(`Invitacion en curso con ${outgoingInvitation.opponentUsername}.`);
+        return false;
+      }
+      setStatus(`Enviando invitacion a ${selectedP2Player.username}...`);
+      setQueueNotice(null);
       try {
         const invitation = await createHumanInvitation(accessToken, selectedP2Player.user_id);
         setOutgoingInvitation({
@@ -1613,8 +1667,9 @@ export function MatchPage(): JSX.Element {
           opponentUsername: selectedP2Player.username,
           rated: queueRanked,
         });
+        setInviteAcceptedTransition(null);
         setQueueNotice(`Invitacion enviada a ${selectedP2Player.username}.`);
-        setStatus(`Solicitud enviada a ${selectedP2Player.username}. Espera su respuesta...`);
+        setStatus(`Invitacion enviada a ${selectedP2Player.username}. Esperando respuesta...`);
         emitFlash(`Solicitud 1v1 enviada a ${selectedP2Player.username}.`, "success");
       } catch (error: unknown) {
         const message =
@@ -1632,6 +1687,7 @@ export function MatchPage(): JSX.Element {
     playSfx(SFX.start, 0.32);
     setQueueNotice(null);
     setOutgoingInvitation(null);
+    setInviteAcceptedTransition(null);
     setRatingBaseline(null);
     setFinishLpDelta(null);
     setFinishRatingDelta(null);
@@ -1682,8 +1738,10 @@ export function MatchPage(): JSX.Element {
     emitFlash,
     isAuthenticated,
     isSpectate,
+    outgoingInvitation,
     queuedGameId,
     queueRanked,
+    selectedRivalIsHuman,
     selectedP1Bot,
     selectedP2Player,
     user?.id,
@@ -2916,7 +2974,7 @@ export function MatchPage(): JSX.Element {
                     }
                   }}
                   className="h-9 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 text-sm text-zinc-100 transition hover:border-zinc-500 focus:border-lime-400/60 focus:outline-none focus:ring-1 focus:ring-lime-400/40"
-                  disabled={interactionLocked || matchStarted}
+                  disabled={interactionLocked || matchStarted || outgoingInvitation !== null}
                 >
                   <option value="play">Jugar (tu vs jugador seleccionado)</option>
                   <option value="spectate">Observador (jugador vs jugador)</option>
@@ -2943,7 +3001,7 @@ export function MatchPage(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => setQueueRanked(false)}
-                    disabled={interactionLocked || matchStarted || isSpectate}
+                    disabled={interactionLocked || matchStarted || isSpectate || outgoingInvitation !== null}
                     className={`relative z-10 rounded text-sm font-semibold transition ${
                       !queueRanked ? "text-black" : "text-zinc-300 hover:text-zinc-100"
                     } ${isSpectate ? "cursor-not-allowed opacity-50" : ""}`}
@@ -2953,7 +3011,7 @@ export function MatchPage(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => setQueueRanked(true)}
-                    disabled={interactionLocked || matchStarted || isSpectate}
+                    disabled={interactionLocked || matchStarted || isSpectate || outgoingInvitation !== null}
                     className={`relative z-10 rounded text-sm font-semibold transition ${
                       queueRanked ? "text-black" : "text-zinc-300 hover:text-zinc-100"
                     } ${isSpectate ? "cursor-not-allowed opacity-50" : ""}`}
@@ -2977,20 +3035,92 @@ export function MatchPage(): JSX.Element {
               <Button
                 type="button"
                 onClick={() => {
+                  if (outgoingInvitation !== null || inviteAcceptedTransition !== null) {
+                    return;
+                  }
                   void startMatch();
                 }}
                 onMouseEnter={onStartButtonHover}
-                disabled={interactionLocked || showIntro}
+                disabled={interactionLocked || showIntro || outgoingInvitation !== null || inviteAcceptedTransition !== null || cancelingOutgoingInvitation}
                 variant="default"
                 size="sm"
                 className={`w-full font-semibold tracking-wide transition ${
                   matchStarted
                     ? "opacity-90"
-                    : "border border-lime-200/70 bg-lime-300 text-black shadow-[0_0_20px_rgba(163,230,53,0.45)] hover:bg-lime-200"
+                    : inviteFlowEnabled
+                      ? "border border-lime-300/70 bg-lime-300 text-black shadow-[0_0_18px_rgba(163,230,53,0.38)] hover:bg-lime-200"
+                      : "border border-lime-200/70 bg-lime-300 text-black shadow-[0_0_20px_rgba(163,230,53,0.45)] hover:bg-lime-200"
                 }`}
               >
-                {matchStarted ? "Partida en curso" : "Iniciar partida"}
+                {matchStarted
+                  ? "Partida en curso"
+                  : outgoingInvitation !== null
+                    ? "Invitacion en espera..."
+                    : inviteAcceptedTransition !== null
+                      ? "Entrando a la arena..."
+                      : inviteFlowEnabled
+                        ? "Enviar invitacion"
+                        : "Iniciar partida"}
               </Button>
+              {inviteWaitingRoomVisible ? (
+                <motion.div
+                  className="space-y-2 rounded-md border border-lime-400/40 bg-lime-300/8 p-2.5"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                >
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-lime-300">Sala de espera 1v1</p>
+                  {outgoingInvitation !== null ? (
+                    <>
+                      <p className="text-xs text-zinc-200">
+                        Invitacion enviada a <span className="font-semibold text-lime-200">@{outgoingInvitation.opponentUsername}</span>
+                      </p>
+                      <div className="flex items-center justify-between rounded-md border border-zinc-700/80 bg-zinc-950/80 px-2 py-1.5">
+                        <p className="inline-flex items-center gap-2 text-xs text-zinc-300">
+                          <motion.span
+                            className="h-2 w-2 rounded-full bg-lime-300"
+                            animate={{ opacity: [0.35, 1, 0.35], scale: [1, 1.08, 1] }}
+                            transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                          />
+                          Esperando aceptacion...
+                        </p>
+                        <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-zinc-500">
+                          id {outgoingInvitation.gameId.slice(0, 8)}
+                        </p>
+                      </div>
+                      <p className="text-[11px] text-zinc-500">La sala se refresca automaticamente cada 4s.</p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="w-full border border-red-500/45 bg-red-500/10 text-red-100 hover:bg-red-500/18"
+                        onClick={() => {
+                          void cancelOutgoingInvite();
+                        }}
+                        disabled={cancelingOutgoingInvitation}
+                      >
+                        {cancelingOutgoingInvitation ? "Cancelando..." : "Cancelar invitacion"}
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="inline-flex items-center gap-2 text-xs text-lime-200">
+                        <Check className="h-3.5 w-3.5" />
+                        @{inviteAcceptedTransition ?? "rival"} acepto la invitacion.
+                      </p>
+                      <p className="text-xs text-zinc-300">Entrando a la arena...</p>
+                      <div className="h-1.5 overflow-hidden rounded bg-zinc-800">
+                        <motion.div
+                          className="h-full bg-lime-300/80"
+                          initial={{ width: "0%" }}
+                          animate={{ width: "100%" }}
+                          transition={{ duration: INVITE_ACCEPT_TRANSITION_MS / 1000, ease: "easeOut" }}
+                        />
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+              ) : null}
               {matchStarted && !gameFinished ? (
                 <Button
                   type="button"
@@ -3016,7 +3146,7 @@ export function MatchPage(): JSX.Element {
                         value={selectedP1BotId}
                         onChange={(event) => setSelectedP1BotId(event.target.value)}
                         className="sr-only"
-                        disabled={interactionLocked || matchStarted}
+                        disabled={interactionLocked || matchStarted || outgoingInvitation !== null}
                       >
                         {publicPlayers.length === 0 ? (
                           <option value="">sin jugadores</option>
@@ -3035,7 +3165,7 @@ export function MatchPage(): JSX.Element {
                           setRivalPickerQuery("");
                           setRivalPickerOpen(true);
                         }}
-                        disabled={interactionLocked || matchStarted}
+                        disabled={interactionLocked || matchStarted || outgoingInvitation !== null}
                         className="group flex h-9 w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-950 px-2 text-sm text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <span className="inline-flex items-center gap-2 truncate">
@@ -3067,7 +3197,7 @@ export function MatchPage(): JSX.Element {
                       variant="secondary"
                       className="w-full"
                       onClick={swapSpectatorBots}
-                      disabled={interactionLocked || matchStarted || botAccounts.length === 0}
+                      disabled={interactionLocked || matchStarted || botAccounts.length === 0 || outgoingInvitation !== null}
                     >
                       Swap P1/P2
                     </Button>
@@ -3077,7 +3207,7 @@ export function MatchPage(): JSX.Element {
                       variant="secondary"
                       className="w-full"
                       onClick={randomizeSpectatorBots}
-                      disabled={interactionLocked || matchStarted || botAccounts.length === 0}
+                      disabled={interactionLocked || matchStarted || botAccounts.length === 0 || outgoingInvitation !== null}
                     >
                       Aleatorio
                     </Button>
@@ -3097,7 +3227,7 @@ export function MatchPage(): JSX.Element {
                   value={selectedP2BotId}
                   onChange={(event) => setSelectedP2BotId(event.target.value)}
                   className="sr-only"
-                  disabled={interactionLocked || matchStarted}
+                  disabled={interactionLocked || matchStarted || outgoingInvitation !== null}
                 >
                   {publicPlayers.length === 0 ? (
                     <option value="">sin jugadores</option>
@@ -3116,7 +3246,7 @@ export function MatchPage(): JSX.Element {
                     setRivalPickerQuery("");
                     setRivalPickerOpen(true);
                   }}
-                  disabled={interactionLocked || matchStarted}
+                  disabled={interactionLocked || matchStarted || outgoingInvitation !== null}
                   className="group flex h-9 w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-950 px-2 text-sm text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span className="inline-flex items-center gap-2 truncate">
@@ -3145,42 +3275,32 @@ export function MatchPage(): JSX.Element {
               </div>
             </motion.div>
 
-            <motion.div className="space-y-2" variants={panelSectionVariants} custom={0.18}>
-              <div className="rounded-md border border-zinc-700 bg-zinc-950 p-2 hover:border-zinc-500">
-                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Estado</p>
-                <p className="mt-1 text-xs text-zinc-300">
-                  {thinking ? `IA activa (${sideController(board.current_player)}) pensando...` : status}
-                </p>
-              </div>
-              <div className="rounded-md border border-zinc-700 bg-zinc-950 p-2 hover:border-zinc-500">
-                <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Sincronizacion</p>
-                <p className="mt-1 text-[11px] text-zinc-300">
-                  {isSpectate ? (
-                    "Espectador: sin historial remoto."
-                  ) : isAuthenticated ? (
-                    "Sincronizacion remota habilitada."
-                  ) : (
-                    <>
-                      Modo local activo.{" "}
-                      <Link to="/auth/login" className="text-lime-300 underline">
-                        Inicia sesion
-                      </Link>{" "}
-                      para guardar historial.
-                    </>
-                  )}
-                </p>
-                <p className="mt-1 truncate text-[11px] text-zinc-500" title={persistStatus}>
-                  {persistStatus}
-                </p>
-                <div className="mt-2 h-8">
-                  {persistedGameId !== null ? (
-                    <Button asChild type="button" size="sm" variant="secondary" className="h-8 w-full">
-                      <Link to={`/profile/games/${persistedGameId}`}>Ver replay</Link>
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            </motion.div>
+            {gameFinished ? (
+              <motion.div
+                className="flex items-center justify-between gap-2 rounded-md border border-zinc-700 bg-zinc-950/70 px-2 py-1.5"
+                variants={panelSectionVariants}
+                custom={0.18}
+              >
+                <Badge
+                  variant="default"
+                  className="max-w-[14rem] truncate border-zinc-600 bg-zinc-900/80 text-zinc-200"
+                  title={`${status} | ${persistStatus}`}
+                >
+                  {persistError !== null
+                    ? "Sync pendiente"
+                    : persistedGameId !== null
+                      ? "Replay sincronizada"
+                      : canPersist
+                        ? "Finalizada, sincronizando..."
+                        : "Partida local finalizada"}
+                </Badge>
+                {persistedGameId !== null ? (
+                  <Button asChild type="button" size="sm" variant="secondary" className="h-7 px-2.5 text-[11px]">
+                    <Link to={`/profile/games/${persistedGameId}`}>Ver replay</Link>
+                  </Button>
+                ) : null}
+              </motion.div>
+            ) : null}
             {persistError !== null && (
               <div className="rounded-md border border-red-500/50 bg-red-500/10 p-2 text-xs text-red-200">
                 {persistError}

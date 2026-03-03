@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.config import Settings, get_settings
+from api.deps.inference import preload_inference_service
 from api.error_handling import register_error_handlers
 from api.modules.auth.rate_limit import AuthRateLimiter
 from api.modules.auth.router import router as auth_router
@@ -24,11 +28,20 @@ from api.observability import configure_logging, register_request_logging
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     configure_logging(cfg)
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Preload once at process startup to remove cold-start lag from the
+        # first model move users see in live matches.
+        preload_inference_service()
+        yield
+
     app = FastAPI(
         title=cfg.app_name,
         debug=cfg.app_debug,
         docs_url=cfg.docs_url,
         redoc_url=cfg.redoc_url,
+        lifespan=_lifespan,
     )
     register_error_handlers(app)
     if cfg.app_log_requests:

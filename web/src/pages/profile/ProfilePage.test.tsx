@@ -12,6 +12,7 @@ const fetchIncomingInvitationsMock = vi.fn();
 const acceptInvitationMock = vi.fn();
 const rejectInvitationMock = vi.fn();
 const openInvitationsSocketMock = vi.fn();
+const fetchPersistedReplayMock = vi.fn();
 
 vi.mock("@/widgets/layout/AppShell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -32,6 +33,9 @@ vi.mock("@/features/matches/api", () => ({
   acceptInvitation: (...args: unknown[]) => acceptInvitationMock(...args),
   rejectInvitation: (...args: unknown[]) => rejectInvitationMock(...args),
   openInvitationsSocket: (...args: unknown[]) => openInvitationsSocketMock(...args),
+}));
+vi.mock("@/features/match/persistence", () => ({
+  fetchPersistedReplay: (...args: unknown[]) => fetchPersistedReplayMock(...args),
 }));
 
 vi.mock("@/app/providers/useAuth", () => ({
@@ -66,6 +70,7 @@ describe("ProfilePage", () => {
     acceptInvitationMock.mockReset();
     rejectInvitationMock.mockReset();
     openInvitationsSocketMock.mockReset();
+    fetchPersistedReplayMock.mockReset();
 
     fetchActiveSeasonMock.mockResolvedValue({
       id: "season-1",
@@ -110,6 +115,19 @@ describe("ProfilePage", () => {
       onerror: null,
       onmessage: null,
       onclose: null,
+    });
+    fetchPersistedReplayMock.mockResolvedValue({
+      id: "game-12345678",
+      moves: [],
+      game: {
+        id: "game-12345678",
+        queue_type: "ranked",
+        rated: true,
+        status: "finished",
+        winner_side: null,
+        player1_agent: "human",
+        player2_agent: "human",
+      },
     });
   });
 
@@ -284,6 +302,44 @@ describe("ProfilePage", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("Resultado: Resultado IA")).toBeInTheDocument();
       expect(screen.getByText("Casual - espectador")).toBeInTheDocument();
+    });
+  });
+
+  it("prefetches replay detail on hover over Detalle", async () => {
+    fetchMyGamesMock.mockResolvedValue({
+      items: [
+        {
+          id: "game-prefetch-1",
+          season_id: null,
+          queue_type: "ranked",
+          status: "finished",
+          rated: true,
+          player1_id: "user-1",
+          player2_id: "user-2",
+          player1_agent: "human",
+          player2_agent: "model",
+          model_version_id: null,
+          winner_side: "player1",
+          winner_user_id: "user-1",
+          termination_reason: "normal_end",
+          source: "web",
+          quality_score: null,
+          is_training_eligible: true,
+        },
+      ],
+      total: 1,
+      limit: 8,
+      offset: 0,
+      has_more: false,
+    });
+
+    renderWithProviders(<ProfilePage />, { route: "/profile" });
+
+    const detailLink = await screen.findByRole("link", { name: /detalle game-pre/i });
+    fireEvent.mouseEnter(detailLink);
+
+    await waitFor(() => {
+      expect(fetchPersistedReplayMock).toHaveBeenCalledWith("token-123", "game-prefetch-1");
     });
   });
 
@@ -488,12 +544,19 @@ describe("ProfilePage", () => {
     await act(async () => {
       wsHandler?.({
         type: "invitations.status",
-        payload: { items: [{ id: "invite-live-01", status: "pending" }] },
+        payload: {
+          items: [
+            { id: "invite-live-01", status: "pending" },
+            { id: "invite-live-01", status: "pending" },
+            { id: "invite-live-02", status: "aborted" },
+          ],
+        },
       });
     });
 
     await waitFor(() => {
       expect(screen.getByText("invite-l")).toBeInTheDocument();
+      expect(screen.getAllByText("invite-l").length).toBe(1);
     });
   });
 });

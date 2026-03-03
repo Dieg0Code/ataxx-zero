@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   acceptInvitation,
@@ -32,7 +32,7 @@ export function useInvitations({
   enabled,
   includeInitialFetch,
   scope: _scope,
-  fallbackPollingMs = 0,
+  fallbackPollingMs = 12_000,
 }: UseInvitationsOptions): UseInvitationsResult {
   void _scope;
   const queryClient = useQueryClient();
@@ -56,8 +56,25 @@ export function useInvitations({
     refetchIntervalInBackground: true,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    refetchOnReconnect: true,
   });
+
+  const normalizePendingInvitations = useCallback((items: HumanInvitation[]): HumanInvitation[] => {
+    const unique = new Map<string, HumanInvitation>();
+    items.forEach((item, index) => {
+      if (item.status !== "pending") {
+        return;
+      }
+      const dedupeKey =
+        typeof item.id === "string" && item.id.length > 0 ? item.id : `pending-fallback-${index}`;
+      unique.set(dedupeKey, item);
+    });
+    return [...unique.values()].sort((a, b) => {
+      const aTs = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bTs = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return bTs - aTs;
+    });
+  }, []);
 
   useEffect(() => {
     if (!enabled || accessToken === null) {
@@ -111,7 +128,7 @@ export function useInvitations({
       }
       setSocketHealthy(true);
       reconnectAttemptRef.current = 0;
-      const pendingItems = event.payload.items.filter((item) => item.status === "pending");
+      const pendingItems = normalizePendingInvitations(event.payload.items);
       setLiveInvitations(pendingItems);
       const total =
         typeof event.payload.total === "number" && Number.isFinite(event.payload.total)
@@ -134,7 +151,6 @@ export function useInvitations({
 
     const onSocketFailure = (): void => {
       setSocketHealthy(false);
-      setLiveInvitations(null);
       maybeInvalidateInvitations();
       scheduleReconnect();
     };
@@ -163,11 +179,11 @@ export function useInvitations({
       clearReconnectTimer();
       socket?.close();
     };
-  }, [accessToken, enabled, includeInitialFetch, queryClient, queryKey]);
+  }, [accessToken, enabled, includeInitialFetch, normalizePendingInvitations, queryClient, queryKey]);
 
   const invitations = useMemo(
-    () => (liveInvitations ?? invitationsQuery.data?.items ?? []).filter((item) => item.status === "pending"),
-    [invitationsQuery.data?.items, liveInvitations],
+    () => normalizePendingInvitations(liveInvitations ?? invitationsQuery.data?.items ?? []),
+    [invitationsQuery.data?.items, liveInvitations, normalizePendingInvitations],
   );
 
   const acceptInvitationById = async (gameId: string): Promise<void> => {

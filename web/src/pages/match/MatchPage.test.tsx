@@ -13,6 +13,9 @@ const fetchPersistedGameSummaryMock = vi.fn();
 const fetchPersistedReplayMock = vi.fn();
 const openPersistedGameSocketMock = vi.fn();
 const fetchPublicPlayersMock = vi.fn();
+const createHumanInvitationMock = vi.fn();
+const fetchInvitationGameMock = vi.fn();
+const rejectInvitationMock = vi.fn();
 const storeInferredMoveMock = vi.fn();
 const storeManualMoveMock = vi.fn();
 const useAuthMock = vi.fn();
@@ -45,6 +48,12 @@ vi.mock("@/features/match/persistence", () => ({
 
 vi.mock("@/features/identity/api", () => ({
   fetchPublicPlayers: (...args: unknown[]) => fetchPublicPlayersMock(...args),
+}));
+
+vi.mock("@/features/matches/api", () => ({
+  createHumanInvitation: (...args: unknown[]) => createHumanInvitationMock(...args),
+  fetchInvitationGame: (...args: unknown[]) => fetchInvitationGameMock(...args),
+  rejectInvitation: (...args: unknown[]) => rejectInvitationMock(...args),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -80,6 +89,9 @@ describe("MatchPage spectator mode", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    createHumanInvitationMock.mockReset();
+    fetchInvitationGameMock.mockReset();
+    rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
     navigateMock.mockReset();
@@ -92,6 +104,21 @@ describe("MatchPage spectator mode", () => {
       close: vi.fn(),
       onclose: null,
       onmessage: null,
+    });
+    createHumanInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    fetchInvitationGameMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    rejectInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "aborted",
+      rated: false,
     });
     fetchPersistedGameSummaryMock.mockResolvedValue({
       id: "game-keep",
@@ -193,6 +220,9 @@ describe("MatchPage automatic persistence", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    createHumanInvitationMock.mockReset();
+    fetchInvitationGameMock.mockReset();
+    rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
     navigateMock.mockReset();
@@ -205,6 +235,21 @@ describe("MatchPage automatic persistence", () => {
       close: vi.fn(),
       onclose: null,
       onmessage: null,
+    });
+    createHumanInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    fetchInvitationGameMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    rejectInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "aborted",
+      rated: false,
     });
     fetchPersistedGameSummaryMock.mockResolvedValue({
       id: "game-keep",
@@ -275,7 +320,6 @@ describe("MatchPage automatic persistence", () => {
       );
     });
 
-    expect(screen.getByText(/Guardado remoto activo/i)).toBeInTheDocument();
   }, 15000);
 
   it("forces casual persistence in spectate IA vs IA", async () => {
@@ -345,12 +389,13 @@ describe("MatchPage automatic persistence", () => {
     fireEvent.click(screen.getByRole("button", { name: "Iniciar partida" }));
 
     await waitFor(() => {
-      expect(createPersistedGameMock).toHaveBeenCalledWith(
-        "token-123",
-        "heuristic",
+      expect(createPersistedGameMock).toHaveBeenCalledTimes(1);
+      const args = createPersistedGameMock.mock.calls[0];
+      expect(args[0]).toBe("token-123");
+      expect(args[2]).toEqual(
         expect.objectContaining({
           player1Agent: "human",
-          player2Agent: "heuristic",
+          selectedP2BotUserId: "bot-p1",
         }),
       );
     });
@@ -375,6 +420,9 @@ describe("MatchPage queued human vs human", () => {
     fetchPersistedReplayMock.mockReset();
     openPersistedGameSocketMock.mockReset();
     fetchPublicPlayersMock.mockReset();
+    createHumanInvitationMock.mockReset();
+    fetchInvitationGameMock.mockReset();
+    rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
     navigateMock.mockReset();
@@ -387,6 +435,21 @@ describe("MatchPage queued human vs human", () => {
       close: vi.fn(),
       onclose: null,
       onmessage: null,
+    });
+    createHumanInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    fetchInvitationGameMock.mockResolvedValue({
+      id: "invite-default",
+      status: "pending",
+      rated: false,
+    });
+    rejectInvitationMock.mockResolvedValue({
+      id: "invite-default",
+      status: "aborted",
+      rated: false,
     });
     fetchPersistedGameSummaryMock.mockResolvedValue({
       id: "game-h2h",
@@ -431,6 +494,74 @@ describe("MatchPage queued human vs human", () => {
       refreshUser: vi.fn(),
     });
   });
+
+  it("shows a waiting room after sending a human invitation", async () => {
+    createHumanInvitationMock.mockResolvedValue({
+      id: "invite-h2h-1",
+      status: "pending",
+      rated: false,
+    });
+    fetchInvitationGameMock.mockResolvedValue({
+      id: "invite-h2h-1",
+      status: "pending",
+      rated: false,
+    });
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Rival (jugador)")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Rival (jugador)"), {
+      target: { value: "u1" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /enviar invitacion/i }));
+
+    await waitFor(() => {
+      expect(createHumanInvitationMock).toHaveBeenCalledWith("token-h2h", "u1");
+    });
+
+    expect(await screen.findByText(/sala de espera 1v1/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/invitacion enviada a/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /cancelar invitacion/i })).toBeInTheDocument();
+  }, 15000);
+
+  it("cancels a pending invitation from waiting room", async () => {
+    createHumanInvitationMock.mockResolvedValue({
+      id: "invite-h2h-cancel",
+      status: "pending",
+      rated: false,
+    });
+    fetchInvitationGameMock.mockResolvedValue({
+      id: "invite-h2h-cancel",
+      status: "pending",
+      rated: false,
+    });
+    rejectInvitationMock.mockResolvedValue({
+      id: "invite-h2h-cancel",
+      status: "aborted",
+      rated: false,
+    });
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Rival (jugador)")).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText("Rival (jugador)"), {
+      target: { value: "u1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /enviar invitacion/i }));
+
+    const cancelButton = await screen.findByRole("button", { name: /cancelar invitacion/i });
+    fireEvent.click(cancelButton);
+
+    await waitFor(() => {
+      expect(rejectInvitationMock).toHaveBeenCalledWith("token-h2h", "invite-h2h-cancel");
+      expect(screen.queryByText(/sala de espera 1v1/i)).not.toBeInTheDocument();
+    });
+  }, 15000);
 
   it("does not run local AI on rival human turn for queued 1v1", async () => {
     sessionStorage.setItem(

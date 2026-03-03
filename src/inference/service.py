@@ -154,6 +154,7 @@ class InferenceService:
                 "Inference initialization failed: neither torch checkpoint nor ONNX session is available."
             )
         self._mcts: MCTS | None = None
+        self._is_warmed_up = False
 
     @staticmethod
     def _resolve_device(device: str) -> str:
@@ -413,6 +414,15 @@ class InferenceService:
             _, value_tensor = self.system.model(obs_tensor, action_mask=mask_tensor)
         value = float(value_tensor.item())
         return InferenceResult(move=move, action_idx=action_idx, value=value, mode="strong")
+
+    def warmup(self, *, mode: InferenceMode = "fast") -> None:
+        """
+        Prime inference runtime once so the first real bot turn avoids cold-start latency.
+        """
+        if self._is_warmed_up:
+            return
+        self.predict(board=AtaxxBoard(), mode=mode)
+        self._is_warmed_up = True
 
     def predict(self, board: AtaxxBoard, *, mode: InferenceMode = "fast") -> InferenceResult:
         if board.is_game_over():

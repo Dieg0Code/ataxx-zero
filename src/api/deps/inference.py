@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 from fastapi import HTTPException, status
@@ -7,6 +8,8 @@ from fastapi import HTTPException, status
 from api.config import Settings, get_settings
 from api.inference_artifacts import resolve_artifact_uri
 from inference.service import InferenceService
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -54,3 +57,18 @@ def get_inference_service_dep() -> InferenceService:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Inference service unavailable: {exc}",
         ) from exc
+
+
+def preload_inference_service() -> InferenceService | None:
+    """
+    Best-effort preload to avoid first-turn latency spikes in bot matches.
+    """
+    try:
+        service = get_inference_service_dep()
+        service.warmup(mode="fast")
+        return service
+    except HTTPException as exc:
+        logger.warning("Inference preload skipped.", extra={"detail": str(exc.detail)})
+    except Exception:  # pragma: no cover - defensive path for runtime-specific failures.
+        logger.exception("Inference preload crashed unexpectedly.")
+    return None

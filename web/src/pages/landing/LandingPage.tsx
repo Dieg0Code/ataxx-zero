@@ -164,6 +164,7 @@ export function LandingPage(): JSX.Element {
   const queueGlowClass =
     queuePhase === "loading" ? "shadow-[0_0_16px_rgba(163,230,53,0.45)]" : "shadow-[0_0_8px_rgba(163,230,53,0.18)]";
   const acceptProgress = Math.max(0, Math.min(1, acceptCountdown / 12));
+  const queueCtaCancelMode = queueActive || queueJoining;
 
   const emitFlash = useCallback(
     (message: string, tone: "success" | "warning" | "error" | "info"): void => {
@@ -398,20 +399,21 @@ export function LandingPage(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [ctaReward]);
 
-  const cancelQueue = useCallback(async (): Promise<void> => {
+  const cancelQueue = useCallback((): void => {
     joinRequestSeqRef.current += 1;
     guestQueueCancelledRef.current = true;
-    if (accessToken !== null) {
-      try {
-        await leaveQueue(accessToken);
-      } catch {
-        // Ignore backend leave errors and reset local state anyway.
-      }
-    }
+    // Apply local cancel immediately; backend leave can finish in background.
     setQueueActive(false);
+    setQueueJoining(false);
     setQueueSeconds(0);
+    setQueueError(null);
     playSfx(QUEUE_SFX.reject, 0.2);
     emitFlash("Cola cancelada.", "warning");
+    if (accessToken !== null) {
+      void leaveQueue(accessToken).catch(() => {
+        // Ignore backend leave errors and keep local state canceled.
+      });
+    }
   }, [accessToken, emitFlash]);
 
   useEffect(() => {
@@ -628,7 +630,7 @@ export function LandingPage(): JSX.Element {
                 <motion.div
                   className="relative"
                   animate={
-                    queueActive || queueJoining
+                    queueCtaCancelMode
                       ? {}
                       : {
                           scale: [1, 1.018, 1, 1.01, 1],
@@ -662,18 +664,20 @@ export function LandingPage(): JSX.Element {
                     type="button"
                     variant="default"
                     className={`group relative z-[1] overflow-hidden border transition-all duration-200 ${
-                      queueActive || queueJoining
+                      queueCtaCancelMode
                         ? "border-red-300/60 bg-red-400/18 text-red-100 shadow-[0_0_22px_rgba(248,113,113,0.28)] hover:bg-red-400/26"
                         : "border-lime-200/70 bg-lime-300 text-black shadow-[0_0_20px_rgba(163,230,53,0.4)] hover:bg-lime-200 hover:shadow-[0_0_28px_rgba(163,230,53,0.58)]"
                     }`}
                     onClick={() => {
-                      if (queueActive || queueJoining) {
-                        void cancelQueue();
+                      if (queueCtaCancelMode) {
+                        cancelQueue();
                         return;
                       }
                       void startQueue();
                     }}
                     disabled={false}
+                    aria-busy={queueJoining}
+                    aria-label={queueCtaCancelMode ? "Detener busqueda" : "Buscar partida"}
                   >
                     {!queueActive && !queueJoining ? (
                       <motion.span
@@ -692,23 +696,71 @@ export function LandingPage(): JSX.Element {
                         }}
                       />
                     ) : null}
-                    <motion.span
-                      className="mr-2 inline-flex"
-                      animate={queueActive || queueJoining ? {} : { scale: [1, 1.08, 1] }}
-                      transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
-                    >
-                      <Search className="h-4 w-4" />
-                    </motion.span>
-                    {queueActive || queueJoining ? "Detener busqueda" : "Buscar partida"}
+                    <span className="mr-2 inline-flex h-4 w-4 items-center justify-center overflow-hidden">
+                      <AnimatePresence mode="wait" initial={false}>
+                        {queueCtaCancelMode ? (
+                          <motion.span
+                            key="queue-cta-icon-cancel"
+                            className="inline-flex"
+                            initial={{ opacity: 0, scale: 0.78, rotate: -70 }}
+                            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                            exit={{ opacity: 0, scale: 0.78, rotate: 70 }}
+                            transition={{ duration: 0.14, ease: "easeOut" }}
+                          >
+                            <X className="h-4 w-4" />
+                          </motion.span>
+                        ) : (
+                          <motion.span
+                            key="queue-cta-icon-search"
+                            className="inline-flex"
+                            initial={{ opacity: 0, scale: 0.86 }}
+                            animate={{ opacity: 1, scale: [1, 1.08, 1] }}
+                            exit={{ opacity: 0, scale: 0.86 }}
+                            transition={{
+                              opacity: { duration: 0.14, ease: "easeOut" },
+                              scale: { duration: 2.2, repeat: Infinity, ease: "easeInOut" },
+                            }}
+                          >
+                            <Search className="h-4 w-4" />
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </span>
+                    <span className="inline-flex min-w-[8.5rem] justify-center text-center">
+                      <AnimatePresence mode="wait" initial={false}>
+                        {queueCtaCancelMode ? (
+                          <motion.span
+                            key="queue-cta-label-cancel"
+                            initial={{ opacity: 0, y: 3 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -3 }}
+                            transition={{ duration: 0.15, ease: "easeOut" }}
+                          >
+                            Detener busqueda
+                          </motion.span>
+                        ) : (
+                          <motion.span
+                            key="queue-cta-label-search"
+                            initial={{ opacity: 0, y: 3 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -3 }}
+                            transition={{ duration: 0.15, ease: "easeOut" }}
+                          >
+                            Buscar partida
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+                    </span>
                   </Button>
                 </motion.div>
                 <Button
                   asChild
-                  variant="secondary"
-                  className="border border-zinc-700/80 bg-zinc-950 text-zinc-100 hover:bg-zinc-900"
+                  variant="ghost"
+                  size="sm"
+                  className="h-9 border border-zinc-800/70 bg-transparent px-2 text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-100"
                 >
                   <Link to="/match">
-                    Configurar partida
+                    Configuracion avanzada
                     <ArrowRight className="ml-2 h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
                   </Link>
                 </Button>

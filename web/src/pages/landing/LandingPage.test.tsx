@@ -136,6 +136,20 @@ describe("LandingPage queue", () => {
     expect(screen.getByRole("button", { name: /detener busqueda/i })).toBeInTheDocument();
   }, 15000);
 
+  it("restores Buscar partida immediately when canceling a pending join", async () => {
+    joinRankedQueueMock.mockReturnValueOnce(new Promise(() => {}));
+    leaveQueueMock.mockReturnValueOnce(new Promise(() => {}));
+
+    renderWithProviders(<LandingPage />, { route: "/" });
+    fireEvent.click(screen.getByRole("button", { name: /buscar partida/i }));
+
+    const stopButton = await screen.findByRole("button", { name: /detener busqueda/i });
+    fireEvent.click(stopButton);
+
+    expect(screen.getByRole("button", { name: /buscar partida/i })).toBeInTheDocument();
+    expect(leaveQueueMock).toHaveBeenCalledTimes(1);
+  });
+
   it("shows accept modal when queue already returns a matched game", async () => {
     joinRankedQueueMock.mockResolvedValue({
       queue_id: "q-2",

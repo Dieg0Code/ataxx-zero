@@ -20,11 +20,11 @@ from sqlalchemy.exc import IntegrityError
 from agents.heuristic import heuristic_move
 from agents.random_agent import random_move
 from api.config import Settings, get_settings
-from api.db.enums import GameStatus
+from api.db.enums import AgentType, GameStatus
 from api.db.models import Game, User
 from api.deps.auth import get_auth_service_dep, get_current_user_dep
 from api.deps.gameplay import get_gameplay_service_dep
-from api.deps.inference import get_inference_service_dep
+from api.deps.inference import get_inference_service_dep, preload_inference_service
 from api.modules.auth.service import AuthService
 from api.modules.gameplay.schemas import (
     GameCreateRequest,
@@ -285,6 +285,8 @@ async def post_game(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    if game.player1_agent == AgentType.MODEL or game.player2_agent == AgentType.MODEL:
+        preload_inference_service()
     return await _to_game_response(gameplay_service, game)
 
 

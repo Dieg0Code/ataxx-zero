@@ -123,7 +123,7 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     enabled: isAuthenticated && !isMatchRoute,
     includeInitialFetch: !isMatchRoute,
     scope: "appshell",
-    fallbackPollingMs: 0,
+    fallbackPollingMs: 12_000,
   });
   const incomingInvitations = pendingInvitations.length;
   const sortedInvitations = useMemo(

@@ -70,4 +70,17 @@ def resolve_model_inference_service(
     )
 
 
-__all__ = ["resolve_model_inference_service"]
+def prewarm_model_inference_service(
+    *,
+    version: ModelVersion,
+    base_service: InferenceService | None,
+) -> InferenceService:
+    service = resolve_model_inference_service(
+        version=version,
+        base_service=base_service,
+    )
+    service.warmup(mode="fast")
+    return service
+
+
+__all__ = ["prewarm_model_inference_service", "resolve_model_inference_service"]

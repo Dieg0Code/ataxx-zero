@@ -3,13 +3,13 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.deps.inference import get_inference_service_dep
+from api.deps.inference import get_inference_service_dep, preload_inference_service
 
 
 class TestApiInferenceDep(unittest.TestCase):
@@ -22,7 +22,23 @@ class TestApiInferenceDep(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn("Inference service unavailable", str(ctx.exception.detail))
 
+    @patch("api.deps.inference.get_inference_service_dep")
+    def test_preload_inference_service_warms_up_once(self, get_dep: Mock) -> None:
+        service = Mock()
+        get_dep.return_value = service
+
+        resolved = preload_inference_service()
+
+        self.assertIs(resolved, service)
+        service.warmup.assert_called_once_with(mode="fast")
+
+    @patch(
+        "api.deps.inference.get_inference_service_dep",
+        side_effect=HTTPException(status_code=503, detail="inference unavailable"),
+    )
+    def test_preload_inference_service_returns_none_when_unavailable(self, *_: object) -> None:
+        self.assertIsNone(preload_inference_service())
+
 
 if __name__ == "__main__":
     unittest.main()
-

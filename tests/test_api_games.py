@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -101,6 +102,34 @@ class TestApiGames(unittest.TestCase):
         self.assertEqual(payload["queue_type"], "casual")
         self.assertEqual(payload["player2_agent"], "heuristic")
         self.assertIn("id", payload)
+
+    def test_create_game_prewarms_inference_when_model_agent_is_present(self) -> None:
+        client, _ = self._client_with_stub()
+        with patch("api.modules.gameplay.router.preload_inference_service") as preload:
+            response = client.post(
+                "/api/v1/gameplay/games",
+                json={
+                    "queue_type": "vs_ai",
+                    "player1_agent": "human",
+                    "player2_agent": "model",
+                },
+            )
+        self.assertEqual(response.status_code, 201)
+        preload.assert_called_once()
+
+    def test_create_game_skips_prewarm_for_non_model_agents(self) -> None:
+        client, _ = self._client_with_stub()
+        with patch("api.modules.gameplay.router.preload_inference_service") as preload:
+            response = client.post(
+                "/api/v1/gameplay/games",
+                json={
+                    "queue_type": "vs_ai",
+                    "player1_agent": "human",
+                    "player2_agent": "heuristic",
+                },
+            )
+        self.assertEqual(response.status_code, 201)
+        preload.assert_not_called()
 
     def test_get_game_by_id(self) -> None:
         client, _ = self._client_with_stub()

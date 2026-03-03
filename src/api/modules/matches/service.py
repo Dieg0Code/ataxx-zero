@@ -16,7 +16,10 @@ from api.db.enums import (
     WinnerSide,
 )
 from api.db.models import BotProfile, Game, GameMove, User
-from api.modules.matches.model_runtime import resolve_model_inference_service
+from api.modules.matches.model_runtime import (
+    prewarm_model_inference_service,
+    resolve_model_inference_service,
+)
 from api.modules.matches.repository import MatchesRepository
 from api.modules.matches.schemas import MatchCreateRequest, MatchMoveRequest
 from api.modules.ranking.service import RankingService
@@ -52,6 +55,11 @@ class MatchesService:
                 player2_agent = profile.agent_type
                 if profile.agent_type == AgentType.MODEL and model_version_id is None:
                     model_version_id = player2.model_version_id
+                if profile.agent_type == AgentType.MODEL and model_version_id is not None:
+                    await self._prewarm_model_runtime(
+                        version_id=model_version_id,
+                        fallback_service=None,
+                    )
 
         game = Game(
             season_id=payload.season_id,
@@ -96,6 +104,11 @@ class MatchesService:
 
         if opponent.is_bot:
             profile = await self._get_enabled_bot_profile(opponent.id)
+            if profile.agent_type == AgentType.MODEL and opponent.model_version_id is not None:
+                await self._prewarm_model_runtime(
+                    version_id=opponent.model_version_id,
+                    fallback_service=None,
+                )
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             return await self.repository.create_game(
                 Game(
@@ -467,6 +480,23 @@ class MatchesService:
             raise RuntimeError(
                 f"Model version '{version.name}' has no usable local artifact for inference."
             ) from None
+
+    async def _prewarm_model_runtime(
+        self,
+        *,
+        version_id: UUID,
+        fallback_service: InferenceService | None,
+    ) -> None:
+        version = await self.repository.get_model_version(version_id)
+        if version is None:
+            return
+        try:
+            prewarm_model_inference_service(
+                version=version,
+                base_service=fallback_service,
+            )
+        except (FileNotFoundError, RuntimeError, ValueError):
+            return
 
 
 
