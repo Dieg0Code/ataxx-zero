@@ -253,9 +253,9 @@ def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    log(f"Device: {device}")
     trainer_accelerator, trainer_devices, trainer_strategy = resolve_trainer_hw()
+    device = "cuda" if trainer_accelerator == "gpu" else "cpu"
+    log(f"Device: {device}")
     trainer_precision = resolve_trainer_precision(trainer_accelerator)
     log(
         "Trainer HW: "
