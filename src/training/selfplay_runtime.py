@@ -288,25 +288,10 @@ def execute_self_play(
     episode_timeout_s = max(0.0, cfg_float("selfplay_episode_timeout_s"))
     selfplay_start = time.perf_counter()
     last_progress_log_s = selfplay_start
-    log(
-        f"[Iteration {iteration}] self-play start episodes={episodes} sims={cfg_int('mcts_sims')} "
-        f"workers={selfplay_workers}",
-    )
+    log(f"[Iteration {iteration}] self-play start episodes={episodes} sims={cfg_int('mcts_sims')} workers={selfplay_workers}")
     curriculum_mix = get_curriculum_mix(iteration)
-    log(
-        "  Opponent mix: "
-        f"self={curriculum_mix['self']:.2f}, "
-        f"heuristic={curriculum_mix['heuristic']:.2f}, "
-        f"random={curriculum_mix['random']:.2f}",
-        verbose_only=True,
-    )
-    log(
-        "  Heuristic levels: "
-        f"easy={curriculum_mix['heu_easy']:.2f}, "
-        f"normal={curriculum_mix['heu_normal']:.2f}, "
-        f"hard={curriculum_mix['heu_hard']:.2f}",
-        verbose_only=True,
-    )
+    log(f"  Opponent mix: self={curriculum_mix['self']:.2f}, heuristic={curriculum_mix['heuristic']:.2f}, random={curriculum_mix['random']:.2f}", verbose_only=True)
+    log(f"  Heuristic levels: easy={curriculum_mix['heu_easy']:.2f}, normal={curriculum_mix['heu_normal']:.2f}, hard={curriculum_mix['heu_hard']:.2f}", verbose_only=True)
 
     stats: dict[str, float | int] = {
         "wins_p1": 0,
@@ -500,10 +485,8 @@ def execute_self_play(
     stats["cache_misses"] = int(cache_stats["misses"])
     stats["cache_hit_rate"] = float(cache_stats["hit_rate"])
     log(
-        "  Self-play summary: "
-        f"P1={stats['wins_p1']} P2={stats['wins_p2']} draws={stats['draws']} "
-        f"avg_turns={stats['avg_game_length']:.1f} "
-        f"cache_hit={float(stats['cache_hit_rate']):.1%}",
+        f"  Self-play summary: P1={stats['wins_p1']} P2={stats['wins_p2']} draws={stats['draws']} "
+        f"avg_turns={stats['avg_game_length']:.1f} cache_hit={float(stats['cache_hit_rate']):.1%}",
         verbose_only=True,
     )
     return stats
