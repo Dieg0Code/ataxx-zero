@@ -35,6 +35,7 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 MATCHES_SERVICE_DEP = Depends(get_matches_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
 AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
+INVITATIONS_WS_REFRESH_S = 8.0
 
 
 @router.post(
@@ -233,8 +234,11 @@ async def invitations_ws(
                 }
             )
             try:
-                # Lower polling pressure on DB while still keeping invitation UI responsive.
-                await asyncio.wait_for(websocket.receive_text(), timeout=2.5)
+                # Lower DB pressure: invitation updates do not need sub-second cadence.
+                await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=INVITATIONS_WS_REFRESH_S,
+                )
             except (TimeoutError, asyncio.TimeoutError):
                 continue
     except (WebSocketDisconnect, asyncio.TimeoutError):

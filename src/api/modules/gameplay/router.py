@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import numpy as np
@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from agents.heuristic import heuristic_move
 from agents.random_agent import random_move
+from api.config import Settings, get_settings
 from api.db.enums import GameStatus
 from api.db.models import Game, User
 from api.deps.auth import get_auth_service_dep, get_current_user_dep
@@ -48,6 +49,14 @@ GAMEPLAY_SERVICE_DEP = Depends(get_gameplay_service_dep)
 CURRENT_USER_DEP = Depends(get_current_user_dep)
 AUTH_SERVICE_DEP = Depends(get_auth_service_dep)
 logger = logging.getLogger(__name__)
+FALLBACK_MODE_BY_LEVEL: dict[
+    Literal["easy", "normal", "hard"],
+    Literal["heuristic_easy", "heuristic_normal", "heuristic_hard"],
+] = {
+    "easy": "heuristic_easy",
+    "normal": "heuristic_normal",
+    "hard": "heuristic_hard",
+}
 
 
 def _resolve_inference_service(request: Request) -> InferenceService:
@@ -57,6 +66,13 @@ def _resolve_inference_service(request: Request) -> InferenceService:
         get_inference_service_dep,
     )
     return provider()
+
+
+def _resolve_settings(request: Request) -> Settings:
+    state_settings = getattr(request.app.state, "settings", None)
+    if isinstance(state_settings, Settings):
+        return state_settings
+    return get_settings()
 
 
 async def _to_game_response(
@@ -154,26 +170,29 @@ def post_move(
         except HTTPException as exc:
             if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
                 raise
+            settings = _resolve_settings(http_request)
+            fallback_level = settings.inference_fallback_heuristic_level
+            fallback_mode = FALLBACK_MODE_BY_LEVEL[fallback_level]
             # Keep PvE matches playable when model artifacts are missing in runtime.
             logger.warning(
-                "Inference unavailable on /gameplay/move; falling back to heuristic_hard",
-                extra={"detail": exc.detail},
+                "Inference unavailable on /gameplay/move; falling back to heuristic",
+                extra={"detail": exc.detail, "fallback_level": fallback_level},
             )
             rng = np.random.default_rng()
-            fallback_move = heuristic_move(board=board, rng=rng, level="hard")
+            fallback_move = heuristic_move(board=board, rng=rng, level=fallback_level)
             if fallback_move is None:
                 return MoveResponse(
                     move=None,
                     action_idx=ACTION_SPACE.pass_index,
                     value=0.0,
-                    mode="heuristic_hard",
+                    mode=fallback_mode,
                 )
             r1, c1, r2, c2 = fallback_move
             return MoveResponse(
                 move=MovePayload(r1=r1, c1=c1, r2=r2, c2=c2),
                 action_idx=ACTION_SPACE.encode(fallback_move),
                 value=0.0,
-                mode="heuristic_hard",
+                mode=fallback_mode,
             )
 
     rng = np.random.default_rng()

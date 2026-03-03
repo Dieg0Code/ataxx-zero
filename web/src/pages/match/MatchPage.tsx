@@ -62,7 +62,7 @@ const AI_THINK_DELAY_MS = 460;
 const AI_PREVIEW_MS = 420;
 const INFECTION_STEP_MS = 90;
 const INFECTION_BURST_MS = 420;
-const OUTGOING_INVITE_POLL_MS = 2500;
+const OUTGOING_INVITE_POLL_MS = 4000;
 const UI_TICK_MS = 120;
 const INTRO_COUNTDOWN_START = 3;
 const HOVER_SFX_MIN_GAP_MS = 120;
@@ -383,6 +383,7 @@ export function MatchPage(): JSX.Element {
   const gameplayWsRef = useRef<WebSocket | null>(null);
   const lastWsPlyRef = useRef(-1);
   const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const latestBoardRef = useRef<BoardState>(board);
   const failedPersistOpsRef = useRef<PendingPersistOperation[]>([]);
   const unmountCleanupTriggeredRef = useRef(false);
   const unmountCleanupStateRef = useRef<{
@@ -415,6 +416,10 @@ export function MatchPage(): JSX.Element {
       lastAccessTokenRef.current = accessToken;
     }
   }, [accessToken]);
+
+  useEffect(() => {
+    latestBoardRef.current = board;
+  }, [board]);
 
   useEffect(() => {
     unmountCleanupStateRef.current = {
@@ -1372,7 +1377,10 @@ export function MatchPage(): JSX.Element {
 
       if (event.move.board_after !== null) {
         const boardAfter = event.move.board_after as BoardState;
-        setBoard(boardAfter);
+        // Ignore stale snapshots: delayed WS frames used to overwrite a newer local board.
+        if (boardAfter.half_moves >= latestBoardRef.current.half_moves) {
+          setBoard(boardAfter);
+        }
       }
       const remoteMove =
         event.move.r1 === null || event.move.c1 === null || event.move.r2 === null || event.move.c2 === null
@@ -1798,14 +1806,15 @@ export function MatchPage(): JSX.Element {
 
   const persistMoveWithRetry = useCallback(
     async (operation: PendingPersistOperation) => {
-      if (!canPersist || accessToken === null) {
+      const token = lastAccessTokenRef.current;
+      if (!canPersist || token === null) {
         throw new Error("Persistencia no disponible.");
       }
       let lastError: unknown = null;
       for (let attempt = 1; attempt <= PERSIST_MAX_RETRIES; attempt += 1) {
         try {
           await storeManualMove(
-            accessToken,
+            token,
             operation.gameId,
             operation.beforeBoard,
             operation.move,
@@ -1826,7 +1835,7 @@ export function MatchPage(): JSX.Element {
       }
       throw lastError;
     },
-    [accessToken, canPersist],
+    [canPersist],
   );
 
   const disableRemotePersistence = useCallback(

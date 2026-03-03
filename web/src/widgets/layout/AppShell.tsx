@@ -110,6 +110,7 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
   const { isAuthenticated, user, accessToken, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const isMatchRoute = location.pathname.startsWith("/match");
   const [flashMessage, setFlashMessage] = useState<FlashMessage | null>(null);
   const [invitePanelOpen, setInvitePanelOpen] = useState(false);
   const invitePanelRef = useRef<HTMLDivElement | null>(null);
@@ -121,8 +122,9 @@ export function AppShell({ children, onNavigateAttempt, onLogoutAttempt }: AppSh
     rejectInvitationById,
   } = useInvitations({
     accessToken,
-    enabled: isAuthenticated,
-    includeInitialFetch: true,
+    // Match screen already has heavy realtime traffic; pause invitation sync there.
+    enabled: isAuthenticated && !isMatchRoute,
+    includeInitialFetch: !isMatchRoute,
     scope: "appshell",
     fallbackPollingMs: 0,
   });

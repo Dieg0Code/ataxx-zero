@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic import computed_field, model_validator
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     inference_mcts_sims: int = 160
     inference_c_puct: float = 1.5
     inference_prefer_onnx: bool = True
+    inference_fallback_heuristic_level: Literal["easy", "normal", "hard"] = "easy"
 
     # Auth/JWT
     auth_jwt_secret: str = ""

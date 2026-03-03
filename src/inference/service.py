@@ -14,6 +14,8 @@ from game.board import AtaxxBoard
 from game.types import Move
 
 if TYPE_CHECKING:
+    import torch.nn as nn
+
     from engine.mcts import MCTS
 
 InferenceMode = Literal["fast", "strong"]
@@ -57,7 +59,9 @@ class _OnnxSessionLike(Protocol):
 
 
 class _SystemLike(Protocol):
-    model: Any
+    @property
+    def model(self) -> nn.Module:
+        ...
 
     def eval(self) -> _SystemLike:
         ...
@@ -67,6 +71,28 @@ class _SystemLike(Protocol):
 
     def load_state_dict(self, state_dict: dict[str, object]) -> object:
         ...
+
+
+class _CheckpointSystemAdapter:
+    """Minimal runtime wrapper to use plain torch modules as inference systems."""
+
+    def __init__(self, model: nn.Module) -> None:
+        self._model = model
+
+    @property
+    def model(self) -> nn.Module:
+        return self._model
+
+    def eval(self) -> _CheckpointSystemAdapter:
+        self._model.eval()
+        return self
+
+    def to(self, device: str) -> _CheckpointSystemAdapter:
+        self._model.to(device)
+        return self
+
+    def load_state_dict(self, state_dict: dict[str, object]) -> object:
+        return self._model.load_state_dict(state_dict)
 
 
 @lru_cache(maxsize=1)
@@ -165,17 +191,31 @@ class InferenceService:
         allowed = ("d_model", "nhead", "num_layers", "dim_feedforward", "dropout")
         return {key: raw_kwargs[key] for key in allowed if key in raw_kwargs}
 
+    @staticmethod
+    def _extract_model_state_dict(state_dict: dict[str, Any]) -> dict[str, Any]:
+        # Training checkpoints prefix model params with `model.` (Lightning module layout).
+        # Runtime inference uses the raw network, so we strip this prefix when present.
+        if all(key.startswith("model.") for key in state_dict):
+            return {key.removeprefix("model."): value for key, value in state_dict.items()}
+        return state_dict
+
     def _build_legacy_system(self) -> _SystemLike:
         from inference.legacy_model import LegacyAtaxxSystem
 
         return LegacyAtaxxSystem(**self._extract_arch_kwargs(self.model_kwargs))
 
-    def _load_system(self) -> _SystemLike:
-        from model.system import AtaxxZero
+    def _build_spatial_system(self) -> _SystemLike:
+        from model.transformer import AtaxxTransformerNet
 
+        model = AtaxxTransformerNet(**self._extract_arch_kwargs(self.model_kwargs))
+        return _CheckpointSystemAdapter(model)
+
+    def _load_system(self) -> _SystemLike:
         torch_module = self._require_torch()
         ckpt = self.checkpoint_path
         if ckpt.suffix == ".ckpt":
+            from model.system import AtaxxZero
+
             try:
                 return AtaxxZero.load_from_checkpoint(str(ckpt), map_location=self.device)
             except RuntimeError as exc:
@@ -191,9 +231,9 @@ class InferenceService:
         if not isinstance(state_dict_obj, dict):
             raise ValueError("Checkpoint dictionary must contain key 'state_dict'.")
 
-        system = AtaxxZero(**self.model_kwargs)
+        system = self._build_spatial_system()
         try:
-            system.load_state_dict(state_dict_obj)
+            system.load_state_dict(self._extract_model_state_dict(state_dict_obj))
         except RuntimeError as exc:
             if self._is_legacy_state_dict(state_dict_obj):
                 legacy_system = self._build_legacy_system()
