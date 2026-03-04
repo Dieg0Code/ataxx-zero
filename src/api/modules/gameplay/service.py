@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
+from sqlalchemy.exc import DBAPIError
+
 from api.db.enums import (
     AgentType,
     GameStatus,
@@ -22,6 +24,27 @@ from game.serialization import board_to_state
 from inference.service import InferenceResult
 
 logger = logging.getLogger(__name__)
+
+
+class MoveConflictError(ValueError):
+    """Raised when a move collides with a newer persisted board or concurrent write."""
+
+
+def _is_concurrent_move_db_error(exc: DBAPIError) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    # Multiple DB backends/drivers report write races with different messages.
+    # Normalize to one conflict path so the API returns 409 instead of 500.
+    conflict_signals = (
+        "duplicate key value",
+        "unique constraint",
+        "uq_game_moves_game_ply",
+        "deadlock detected",
+        "could not serialize access",
+        "serialization failure",
+        "database is locked",
+        "lock timeout",
+    )
+    return any(signal in message for signal in conflict_signals)
 
 
 class GameplayService:
@@ -303,6 +326,16 @@ class GameplayService:
         mode: str = "manual",
     ) -> tuple[GameMove, Game]:
         game = await self.ensure_can_view_game(game_id=game_id, actor_user=actor_user)
+        board_before = board_to_state(board)
+        last_move = await self.game_repository.get_last_move(game_id)
+        if (
+            last_move is not None
+            and isinstance(last_move.board_after, dict)
+            and last_move.board_after != board_before
+        ):
+            raise MoveConflictError(
+                "Board state is stale; refresh game state and retry the move."
+            )
 
         legal_moves = board.get_valid_moves()
         if move not in legal_moves:
@@ -310,28 +343,35 @@ class GameplayService:
 
         ply = await self.game_repository.next_ply(game_id)
         side = PlayerSide.P1 if board.current_player == 1 else PlayerSide.P2
-        board_before = board_to_state(board)
         scratch = board.copy()
         scratch.step(move)
         board_after = board_to_state(scratch)
 
         r1, c1, r2, c2 = move
-        stored_move = await self.game_repository.create_move(
-            GameMove(
-                game_id=game_id,
-                ply=ply,
-                player_side=side,
-                r1=r1,
-                c1=c1,
-                r2=r2,
-                c2=c2,
-                board_before=board_before,
-                board_after=board_after,
-                mode=mode,
-                action_idx=ACTION_SPACE.encode(move),
-                value=0.0,
+        try:
+            stored_move = await self.game_repository.create_move(
+                GameMove(
+                    game_id=game_id,
+                    ply=ply,
+                    player_side=side,
+                    r1=r1,
+                    c1=c1,
+                    r2=r2,
+                    c2=c2,
+                    board_before=board_before,
+                    board_after=board_after,
+                    mode=mode,
+                    action_idx=ACTION_SPACE.encode(move),
+                    value=0.0,
+                )
             )
-        )
+        except DBAPIError as exc:
+            await self.game_repository.rollback()
+            if _is_concurrent_move_db_error(exc):
+                raise MoveConflictError(
+                    "Concurrent move conflict; refresh board and retry."
+                ) from exc
+            raise
         await self._update_game_state(game=game, board_after=scratch)
         return stored_move, game
 

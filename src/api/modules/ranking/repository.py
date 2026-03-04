@@ -67,14 +67,18 @@ class RankingRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> list[RatingEvent]:
-        stmt = select(RatingEvent).where(
-            RatingEvent.user_id == user_id,
-            RatingEvent.season_id == season_id,
+        stmt = (
+            select(RatingEvent)
+            .where(
+                RatingEvent.user_id == user_id,
+                RatingEvent.season_id == season_id,
+            )
+            .order_by(col(RatingEvent.created_at).desc(), col(RatingEvent.id).desc())
+            .limit(limit)
+            .offset(offset)
         )
         result = await self.session.execute(stmt)
-        rows = list(result.scalars().all())
-        rows.sort(key=lambda row: row.created_at, reverse=True)
-        return rows[offset : offset + limit]
+        return list(result.scalars().all())
 
     async def get_latest_rating_events_for_user_ids(
         self,

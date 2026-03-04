@@ -16,6 +16,7 @@ class QueueJoinResponse(BaseModel):
                 "season_id": "4aaddf8e-ca81-4347-a278-f6f7be86c6d0",
                 "game_id": "44efed45-d197-4416-bc45-d1cc804f3936",
                 "matched_with": "bot",
+                "opponent_username": "mm-bot-hard",
                 "created_at": "2026-02-23T01:10:00",
                 "updated_at": "2026-02-23T01:10:02",
             }
@@ -27,6 +28,7 @@ class QueueJoinResponse(BaseModel):
     season_id: UUID
     game_id: UUID | None
     matched_with: Literal["human", "bot"] | None = None
+    opponent_username: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -40,6 +42,7 @@ class QueueStatusResponse(BaseModel):
                 "season_id": "4aaddf8e-ca81-4347-a278-f6f7be86c6d0",
                 "game_id": None,
                 "matched_with": None,
+                "opponent_username": None,
                 "created_at": "2026-02-23T01:10:00",
                 "updated_at": "2026-02-23T01:10:00",
             }
@@ -51,6 +54,7 @@ class QueueStatusResponse(BaseModel):
     season_id: UUID | None
     game_id: UUID | None
     matched_with: Literal["human", "bot"] | None = None
+    opponent_username: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

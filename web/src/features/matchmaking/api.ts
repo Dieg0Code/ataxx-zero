@@ -10,6 +10,7 @@ type QueueApiResponse = {
   season_id: string | null;
   game_id: string | null;
   matched_with: MatchedWith | null;
+  opponent_username: string | null;
   created_at: string | null;
   updated_at: string | null;
 };

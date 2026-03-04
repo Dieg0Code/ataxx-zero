@@ -37,7 +37,7 @@ from api.modules.gameplay.schemas import (
     MoveResponse,
     StoredMoveResponse,
 )
-from api.modules.gameplay.service import GameplayService
+from api.modules.gameplay.service import GameplayService, MoveConflictError
 from api.modules.gameplay.ws import gameplay_ws_hub
 from game.actions import ACTION_SPACE
 from game.serialization import board_from_state
@@ -541,6 +541,9 @@ async def post_game_move(
     status_code=status.HTTP_201_CREATED,
     summary="Apply Manual Move",
     description="Stores one explicit move payload for a game. Allowed for participants or admin.",
+    responses={
+        409: {"description": "Move conflict due to stale board or concurrent write."},
+    },
 )
 async def post_game_manual_move(
     game_id: UUID,
@@ -573,6 +576,11 @@ async def post_game_manual_move(
     except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except MoveConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
     except ValueError as exc:

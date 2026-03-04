@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ArrowRight, Check, Clock3, Crown, Search, ShieldCheck, Trophy, X } from "lucide-react";
+import { ArrowRight, Check, Clock3, Crown, Search, ShieldCheck, Trophy, Users, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/app/providers/useAuth";
@@ -46,6 +46,7 @@ const QUEUE_SFX = {
 type QueueMatch = {
   gameId: string;
   matchedWith: MatchedWith;
+  opponentUsername: string | null;
   createdAt: number;
   source: "queue";
 };
@@ -65,6 +66,10 @@ function normalizeGuestUsername(value: string): string {
     .slice(0, 18);
 }
 
+function fallbackOpponentName(matchedWith: MatchedWith): string {
+  return matchedWith === "human" ? "rival humano" : "bot rival";
+}
+
 function saveMatchedGame(gameId: string, matchedWith: MatchedWith): void {
   const payload: QueueMatch = {
     gameId,
@@ -76,7 +81,7 @@ function saveMatchedGame(gameId: string, matchedWith: MatchedWith): void {
 }
 
 export function LandingPage(): JSX.Element {
-  const { isAuthenticated, accessToken } = useAuth();
+  const { user, isAuthenticated, accessToken } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [queueActive, setQueueActive] = useState(false);
@@ -189,6 +194,7 @@ export function LandingPage(): JSX.Element {
   const openMatchAccept = (
     gameId: string,
     matchedWith: MatchedWith,
+    opponentUsername: string | null = null,
     source: "queue" = "queue",
   ): void => {
     playSfx(QUEUE_SFX.found, 0.24);
@@ -200,43 +206,69 @@ export function LandingPage(): JSX.Element {
     setPendingMatch({
       gameId,
       matchedWith,
+      opponentUsername,
       createdAt: Date.now(),
       source,
     });
-    setPendingOpponentName(null);
+    const normalizedOpponentUsername = opponentUsername?.trim();
+    setPendingOpponentName(
+      normalizedOpponentUsername && normalizedOpponentUsername.length > 0
+        ? normalizedOpponentUsername
+        : fallbackOpponentName(matchedWith),
+    );
   };
 
   useEffect(() => {
-    if (pendingMatch === null || accessToken === null) {
+    if (pendingMatch === null) {
       setPendingOpponentName(null);
+      return;
+    }
+    if (pendingMatch.opponentUsername !== null && pendingMatch.opponentUsername.trim().length > 0) {
+      setPendingOpponentName(pendingMatch.opponentUsername);
+      return;
+    }
+    if (accessToken === null) {
+      setPendingOpponentName(fallbackOpponentName(pendingMatch.matchedWith));
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
         const game = await fetchPersistedGameSummary(accessToken, pendingMatch.gameId);
+        const summaryName =
+          game.player1_id === user?.id
+            ? game.player2_username
+            : game.player2_id === user?.id
+              ? game.player1_username
+              : game.player2_username ?? game.player1_username;
+        if (typeof summaryName === "string" && summaryName.trim().length > 0) {
+          if (!cancelled) {
+            setPendingOpponentName(summaryName);
+          }
+          return;
+        }
         const opponentUserId = game.player2_id;
         if (opponentUserId === null) {
           if (!cancelled) {
-            setPendingOpponentName(pendingMatch.matchedWith === "human" ? "jugador" : "oponente");
+            setPendingOpponentName(fallbackOpponentName(pendingMatch.matchedWith));
           }
           return;
         }
         const players = await fetchPublicPlayers(accessToken, { limit: 200 });
         const opponent = players.find((player) => player.user_id === opponentUserId);
         if (!cancelled) {
-          setPendingOpponentName(opponent?.username ?? (pendingMatch.matchedWith === "human" ? "jugador" : "oponente"));
+          setPendingOpponentName(opponent?.username ?? fallbackOpponentName(pendingMatch.matchedWith));
         }
       } catch {
         if (!cancelled) {
-          setPendingOpponentName(pendingMatch.matchedWith === "human" ? "jugador" : "oponente");
+          setPendingOpponentName(fallbackOpponentName(pendingMatch.matchedWith));
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [accessToken, pendingMatch]);
+  }, [accessToken, pendingMatch, user?.id]);
 
   useEffect(() => {
     if (pendingMatch === null) {
@@ -279,7 +311,7 @@ export function LandingPage(): JSX.Element {
       }
       const status = event.payload;
       if (status.status === "matched" && status.game_id !== null && status.matched_with !== null) {
-        openMatchAccept(status.game_id, status.matched_with);
+        openMatchAccept(status.game_id, status.matched_with, status.opponent_username);
       }
     };
 
@@ -319,7 +351,7 @@ export function LandingPage(): JSX.Element {
         return;
       }
       if (joined.status === "matched" && joined.game_id !== null && joined.matched_with !== null) {
-        openMatchAccept(joined.game_id, joined.matched_with);
+        openMatchAccept(joined.game_id, joined.matched_with, joined.opponent_username);
         return;
       }
       setQueueActive(true);
@@ -532,7 +564,10 @@ export function LandingPage(): JSX.Element {
                 Emparejamiento de cola
               </p>
               <p className="mt-3 text-sm text-zinc-300">
-                Rival: <span className="font-semibold text-zinc-100">{pendingOpponentName ?? "sincronizando..."}</span>
+                Rival:{" "}
+                <span className="font-semibold text-zinc-100">
+                  {pendingOpponentName ?? fallbackOpponentName(pendingMatch.matchedWith)}
+                </span>
               </p>
               <p className="mt-1 text-sm text-zinc-400">
                 Tiempo restante: <span className="font-semibold text-lime-300">{acceptCountdown}s</span>
@@ -633,7 +668,7 @@ export function LandingPage(): JSX.Element {
             </CardHeader>
 
             <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <motion.div
                   className="relative"
                   animate={
@@ -762,18 +797,29 @@ export function LandingPage(): JSX.Element {
                 </motion.div>
                 <Button
                   asChild
+                  variant="secondary"
+                  size="sm"
+                  className="h-9 border border-lime-300/45 bg-lime-300/10 px-2 text-lime-100 hover:bg-lime-300/18"
+                >
+                  <Link to="/lobby" onMouseEnter={prefetchMatchSetup} onFocus={prefetchMatchSetup} onTouchStart={prefetchMatchSetup}>
+                    <Users className="mr-2 h-4 w-4" />
+                    Crear sala
+                  </Link>
+                </Button>
+                <Button
+                  asChild
                   variant="ghost"
                   size="sm"
-                  className="h-9 border border-zinc-800/70 bg-transparent px-2 text-zinc-400 hover:bg-zinc-900/70 hover:text-zinc-100"
+                  className="h-8 border border-zinc-800/70 bg-transparent px-2 text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-200"
                 >
                   <Link
-                    to="/match"
+                    to="/profile#laboratorio"
                     onMouseEnter={prefetchMatchSetup}
                     onFocus={prefetchMatchSetup}
                     onTouchStart={prefetchMatchSetup}
                   >
                     Configuracion avanzada
-                    <ArrowRight className="ml-2 h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
+                    <ArrowRight className="ml-2 h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1" />
                   </Link>
                 </Button>
               </div>

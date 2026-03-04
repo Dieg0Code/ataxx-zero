@@ -77,6 +77,8 @@ def register_error_handlers(app: FastAPI) -> None:
             request_id = _resolve_request_id(request)
             status_code = 503 if isinstance(exc, (OperationalError, OSError)) else 500
             detail = "Database unavailable" if status_code == 503 else "Internal server error"
+            raw_error_detail = str(getattr(exc, "orig", exc))
+            error_detail = raw_error_detail[:240] if raw_error_detail else type(exc).__name__
             logger.error(
                 "request_failed",
                 extra={
@@ -85,6 +87,7 @@ def register_error_handlers(app: FastAPI) -> None:
                     "path": request.url.path,
                     "status_code": status_code,
                     "error_type": type(exc).__name__,
+                    "error_detail": error_detail,
                 },
             )
             body = _build_error_body(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
@@ -73,8 +73,6 @@ const P2_MOVE_SFX_MIN_GAP_MS = 70;
 const RESOLVED_MOVE_HIGHLIGHT_MS = 1200;
 const PERSIST_MAX_RETRIES = 3;
 const PERSIST_BASE_BACKOFF_MS = 200;
-const BOARD_TILT_MAX_DEG = 2.8;
-const BOARD_SPOTLIGHT_IDLE = { x: 50, y: 44, active: false } as const;
 const PERSIST_SNAPSHOT_KEY = "ataxx.persist.snapshot.v1";
 const MATCHMAKING_PRESET_KEY = "ataxx.matchmaking.preset.v1";
 const MATCHMAKING_MATCH_KEY = "ataxx.matchmaking.match.v1";
@@ -107,6 +105,7 @@ const HEURISTIC_LEVELS = ["easy", "normal", "hard", "apex", "gambit", "sentinel"
 type HeuristicLevel = (typeof HEURISTIC_LEVELS)[number];
 type InfectionBurst = { key: string; until: number };
 type MatchMode = "play" | "spectate";
+type MatchSetupIntent = "invite" | "bot" | "spectate" | "config";
 type ControllerKind = "human" | "remote_human" | "model" | "heuristic";
 type PendingPersistOperation = {
   gameId: string;
@@ -134,12 +133,6 @@ type OutgoingInvitation = {
   opponentUserId: string;
   opponentUsername: string;
   rated: boolean;
-};
-
-type BoardSpotlight = {
-  x: number;
-  y: number;
-  active: boolean;
 };
 type RatingBaseline = {
   seasonId: string;
@@ -248,6 +241,16 @@ function isFatalPersistenceError(error: unknown): boolean {
   );
 }
 
+function isPersistenceConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return (
+    message.includes("stale") ||
+    message.includes("concurrent move conflict") ||
+    message.includes("http 409") ||
+    message.includes("conflict")
+  );
+}
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   options?: { attempts?: number; baseDelayMs?: number },
@@ -332,6 +335,13 @@ export function MatchPage(): JSX.Element {
   const { user, isAuthenticated, accessToken, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const setupIntent = useMemo<MatchSetupIntent | null>(() => {
+    const value = new URLSearchParams(location.search).get("setup");
+    if (value === "invite" || value === "bot" || value === "spectate" || value === "config") {
+      return value;
+    }
+    return null;
+  }, [location.search]);
   const [board, setBoard] = useState<BoardState>(() => createInitialBoard());
   const [selected, setSelected] = useState<[number, number] | null>(null);
   const [mode, setMode] = useState<"fast" | "strong">("fast");
@@ -356,8 +366,6 @@ export function MatchPage(): JSX.Element {
   const [infectionBursts, setInfectionBursts] = useState<InfectionBurst[]>([]);
   const [lastResolvedMove, setLastResolvedMove] = useState<Move | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [boardTilt, setBoardTilt] = useState({ x: 0, y: 0 });
-  const [boardSpotlight, setBoardSpotlight] = useState<BoardSpotlight>(BOARD_SPOTLIGHT_IDLE);
   const [introCountdown, setIntroCountdown] = useState(INTRO_COUNTDOWN_START);
   const [showIntro, setShowIntro] = useState(false);
   const [matchStarted, setMatchStarted] = useState(false);
@@ -404,9 +412,6 @@ export function MatchPage(): JSX.Element {
   const lastHoverSfxAtRef = useRef(0);
   const lastP2MoveSfxAtRef = useRef(0);
   const previewHalfMovesRef = useRef<number | null>(null);
-  const boardTiltRafRef = useRef<number | null>(null);
-  const boardTiltPendingRef = useRef({ x: 0, y: 0 });
-  const boardSpotlightPendingRef = useRef<BoardSpotlight>(BOARD_SPOTLIGHT_IDLE);
   const lastResolvedMoveTimerRef = useRef<number | null>(null);
   const gameplayWsRef = useRef<WebSocket | null>(null);
   const lastWsPlyRef = useRef(-1);
@@ -429,6 +434,7 @@ export function MatchPage(): JSX.Element {
   });
   const lastAccessTokenRef = useRef<string | null>(accessToken);
   const resultRevealPlayedRef = useRef(false);
+  const setupIntentHandledRef = useRef<string | null>(null);
   const emitFlash = useCallback(
     (message: string, tone: "success" | "warning" | "error" | "info") => {
       navigate(`${location.pathname}${location.search}${location.hash}`, {
@@ -464,9 +470,6 @@ export function MatchPage(): JSX.Element {
     return () => {
       if (lastResolvedMoveTimerRef.current !== null) {
         window.clearTimeout(lastResolvedMoveTimerRef.current);
-      }
-      if (boardTiltRafRef.current !== null) {
-        window.cancelAnimationFrame(boardTiltRafRef.current);
       }
     };
   }, []);
@@ -707,94 +710,102 @@ export function MatchPage(): JSX.Element {
     }
     setLoadingFinishRewards(true);
     void (async () => {
+      let resolved = false;
+      const applyDeltaFromCurrentRating = (
+        currentRating: Awaited<ReturnType<typeof fetchUserRating>>,
+      ): boolean => {
+        if (ratingBaseline === null || ratingBaseline.seasonId !== currentRating.season_id) {
+          return false;
+        }
+        const ratingDelta = currentRating.rating - ratingBaseline.rating;
+        const lpDelta = currentRating.lp - ratingBaseline.lp;
+        const ratingChanged = Math.abs(ratingDelta) >= 0.01;
+        const lpChanged = lpDelta !== 0;
+        const divisionChanged =
+          currentRating.league !== ratingBaseline.league ||
+          currentRating.division !== ratingBaseline.division;
+        const gameCountChanged = currentRating.games_played > ratingBaseline.gamesPlayed;
+        if (!ratingChanged && !lpChanged && !divisionChanged && !gameCountChanged) {
+          return false;
+        }
+        setFinishRatingDelta(ratingDelta);
+        setFinishLpDelta(lpDelta);
+        if (divisionChanged) {
+          setFinishTransitionType(ratingDelta >= 0 || lpDelta >= 0 ? "promotion" : "demotion");
+        } else {
+          setFinishTransitionType("stable");
+        }
+        return true;
+      };
+
       try {
-        const seasonId = ratingBaseline?.seasonId ?? (await fetchActiveSeason()).id;
-        const maxAttempts = 20;
-        let resolved = false;
+        const seasonId = ratingBaseline?.seasonId ?? (await withRetry(() => fetchActiveSeason(), { attempts: 2, baseDelayMs: 120 })).id;
+        const maxAttempts = 8;
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
           if (cancelled) {
             return;
           }
-          const events = await withRetry(
-            () => fetchRatingEvents(user.id, seasonId, 30, 0),
-            { attempts: 3, baseDelayMs: 160 },
-          );
-          const foundEvent = events.items.find((item) => item.game_id === persistedGameId);
-          if (foundEvent !== undefined) {
-            setFinishRatingDelta(foundEvent.delta);
-            if (foundEvent.before_lp !== null && foundEvent.after_lp !== null) {
-              setFinishLpDelta(foundEvent.after_lp - foundEvent.before_lp);
-            } else {
-              setFinishLpDelta(null);
+          if (ratingBaseline !== null && ratingBaseline.seasonId === seasonId) {
+            try {
+              const currentRating = await withRetry(
+                () => fetchUserRating(user.id, seasonId),
+                { attempts: 2, baseDelayMs: 120 },
+              );
+              if (applyDeltaFromCurrentRating(currentRating)) {
+                resolved = true;
+              }
+            } catch {
+              // Keep polling; transient failures should not force an incorrect 0 delta.
             }
-            setFinishTransitionType(foundEvent.transition_type);
-            resolved = true;
+          }
+
+          if (!resolved) {
+            try {
+              const events = await withRetry(
+                () => fetchRatingEvents(user.id, seasonId, 12, 0),
+                { attempts: 2, baseDelayMs: 120 },
+              );
+              const foundEvent = events.items.find((item) => item.game_id === persistedGameId);
+              if (foundEvent !== undefined) {
+                setFinishRatingDelta(foundEvent.delta);
+                if (foundEvent.before_lp !== null && foundEvent.after_lp !== null) {
+                  setFinishLpDelta(foundEvent.after_lp - foundEvent.before_lp);
+                } else {
+                  setFinishLpDelta(null);
+                }
+                setFinishTransitionType(foundEvent.transition_type);
+                resolved = true;
+              }
+            } catch {
+              // Keep polling; transient failures should not force an incorrect 0 delta.
+            }
+          }
+
+          if (resolved) {
             break;
           }
-
-          if (ratingBaseline !== null && ratingBaseline.seasonId === seasonId) {
-            const currentRating = await withRetry(
-              () => fetchUserRating(user.id, seasonId),
-              { attempts: 3, baseDelayMs: 160 },
-            );
-            const ratingDelta = currentRating.rating - ratingBaseline.rating;
-            const lpDelta = currentRating.lp - ratingBaseline.lp;
-            const ratingChanged = Math.abs(ratingDelta) >= 0.01;
-            const lpChanged = lpDelta !== 0;
-            const divisionChanged =
-              currentRating.league !== ratingBaseline.league ||
-              currentRating.division !== ratingBaseline.division;
-            const gameCountChanged = currentRating.games_played > ratingBaseline.gamesPlayed;
-
-            if (ratingChanged || lpChanged || divisionChanged || gameCountChanged) {
-              setFinishRatingDelta(ratingDelta);
-              setFinishLpDelta(lpDelta);
-              if (divisionChanged) {
-                setFinishTransitionType(ratingDelta >= 0 || lpDelta >= 0 ? "promotion" : "demotion");
-              } else {
-                setFinishTransitionType("stable");
-              }
-              resolved = true;
-              break;
-            }
-          }
-
           if (attempt < maxAttempts) {
-            await sleep(350);
+            await sleep(220);
           }
         }
+
         if (cancelled || resolved) {
           return;
         }
 
-        // Deterministic fallback: avoid indefinite "Pendiente" when no rating event arrives.
         if (ratingBaseline !== null) {
           try {
             const currentRating = await withRetry(
               () => fetchUserRating(user.id, seasonId),
               { attempts: 3, baseDelayMs: 180 },
             );
-            setFinishRatingDelta(currentRating.rating - ratingBaseline.rating);
-            setFinishLpDelta(currentRating.lp - ratingBaseline.lp);
-            const divisionChanged =
-              currentRating.league !== ratingBaseline.league ||
-              currentRating.division !== ratingBaseline.division;
-            if (divisionChanged) {
-              const ratingDelta = currentRating.rating - ratingBaseline.rating;
-              const lpDelta = currentRating.lp - ratingBaseline.lp;
-              setFinishTransitionType(ratingDelta >= 0 || lpDelta >= 0 ? "promotion" : "demotion");
-            } else {
-              setFinishTransitionType("stable");
+            if (applyDeltaFromCurrentRating(currentRating)) {
+              resolved = true;
             }
-            return;
           } catch {
-            // Last-resort fallback below.
+            // Keep null deltas to render "Pendiente" instead of misleading zero values.
           }
         }
-
-        setFinishRatingDelta(0);
-        setFinishLpDelta(0);
-        setFinishTransitionType("stable");
       } catch {
         if (!cancelled) {
           if (ratingBaseline !== null) {
@@ -817,14 +828,8 @@ export function MatchPage(): JSX.Element {
                 setFinishTransitionType("stable");
               }
             } catch {
-              setFinishRatingDelta(0);
-              setFinishLpDelta(0);
-              setFinishTransitionType("stable");
+              // Keep null deltas to render pending state until backend sync settles.
             }
-          } else {
-            setFinishRatingDelta(0);
-            setFinishLpDelta(0);
-            setFinishTransitionType("stable");
           }
         }
       } finally {
@@ -837,19 +842,6 @@ export function MatchPage(): JSX.Element {
       cancelled = true;
     };
   }, [accessToken, gameFinished, persistedGameId, queueRanked, ratingBaseline, user?.id]);
-
-  useEffect(() => {
-    if (!loadingFinishRewards || !queueRanked || !gameFinished) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      setLoadingFinishRewards(false);
-      setFinishRatingDelta((current) => (current === null ? 0 : current));
-      setFinishLpDelta((current) => (current === null ? 0 : current));
-      setFinishTransitionType((current) => current ?? "stable");
-    }, 15000);
-    return () => window.clearTimeout(timeoutId);
-  }, [gameFinished, loadingFinishRewards, queueRanked]);
 
   useEffect(() => {
     if (!isResultOverlayOpen) {
@@ -991,6 +983,113 @@ export function MatchPage(): JSX.Element {
       sessionStorage.removeItem(MATCHMAKING_PRESET_KEY);
     }
   }, []);
+
+  useEffect(() => {
+    const queueParam = new URLSearchParams(location.search).get("queue");
+    if (queueParam !== null || setupIntent === null) {
+      return;
+    }
+    const setupKey = `${location.key}:${setupIntent}`;
+    if (setupIntentHandledRef.current === setupKey) {
+      return;
+    }
+    setupIntentHandledRef.current = setupKey;
+
+    if (setupIntent === "invite") {
+      setMatchMode("play");
+      setQueueRanked(false);
+      if (!isAuthenticated) {
+        setStatus("Sala 1v1: inicia sesion para invitar a un rival humano.");
+        setQueueNotice("Invitaciones humanas requieren sesion activa.");
+        return;
+      }
+      setStatus("Sala 1v1: elige un rival humano y pulsa Enviar invitacion.");
+      setQueueNotice("Sala personalizada abierta. Esperando confirmacion del rival.");
+      setRivalPickerTarget("p2");
+      setRivalPickerQuery("");
+      setRivalPickerOpen(true);
+      return;
+    }
+
+    if (setupIntent === "bot") {
+      setMatchMode("play");
+      setQueueRanked(false);
+      setStatus("Sala personalizada vs bot: ajusta rival y pulsa Iniciar partida.");
+      setQueueNotice("Sala personalizada vs bot lista.");
+      return;
+    }
+
+    if (setupIntent === "spectate") {
+      setMatchMode("spectate");
+      setQueueRanked(false);
+      setStatus("Sala observador: elige P1/P2 y lanza la simulacion IA vs IA.");
+      setQueueNotice("Sala de simulacion IA vs IA lista.");
+      return;
+    }
+
+    setQueueRanked(false);
+    setStatus("Configuracion avanzada: ajusta jugadores y parametros antes de iniciar.");
+    setQueueNotice("Modo configuracion avanzada activo.");
+  }, [isAuthenticated, location.key, location.search, setupIntent]);
+
+  useEffect(() => {
+    if (setupIntent === null || publicPlayers.length === 0 || queuedGameId !== null || matchStarted) {
+      return;
+    }
+
+    if (setupIntent === "invite") {
+      const firstHuman = publicPlayers.find((player) => !player.is_bot && player.user_id !== user?.id);
+      if (firstHuman === undefined) {
+        return;
+      }
+      setSelectedP2BotId((current) => {
+        const selected = publicPlayers.find((player) => player.user_id === current);
+        if (selected !== undefined && !selected.is_bot && selected.user_id !== user?.id) {
+          return current;
+        }
+        return firstHuman.user_id;
+      });
+      return;
+    }
+
+    if (setupIntent === "bot") {
+      const firstBot = publicPlayers.find((player) => player.is_bot);
+      if (firstBot === undefined) {
+        return;
+      }
+      setSelectedP2BotId((current) => {
+        const selected = publicPlayers.find((player) => player.user_id === current);
+        if (selected !== undefined && selected.is_bot) {
+          return current;
+        }
+        return firstBot.user_id;
+      });
+      return;
+    }
+
+    if (setupIntent === "spectate") {
+      const bots = publicPlayers.filter((player) => player.is_bot);
+      if (bots.length === 0) {
+        return;
+      }
+      const firstBot = bots[0];
+      const secondBot = bots.length > 1 ? bots[1] : bots[0];
+      setSelectedP1BotId((current) => {
+        const selected = publicPlayers.find((player) => player.user_id === current);
+        if (selected !== undefined && selected.is_bot) {
+          return current;
+        }
+        return firstBot.user_id;
+      });
+      setSelectedP2BotId((current) => {
+        const selected = publicPlayers.find((player) => player.user_id === current);
+        if (selected !== undefined && selected.is_bot) {
+          return current;
+        }
+        return secondBot.user_id;
+      });
+    }
+  }, [matchStarted, publicPlayers, queuedGameId, setupIntent, user?.id]);
 
   useEffect(() => {
     try {
@@ -1289,19 +1388,23 @@ export function MatchPage(): JSX.Element {
     }
   }, [selectedP2Bot]);
 
-  const needsUiTicker =
-    matchStarted ||
+  const hasHighFrequencyEffects =
     previewMove !== null ||
     infectionBursts.length > 0 ||
     Object.keys(infectionMask).length > 0;
+  const uiTickerIntervalMs = hasHighFrequencyEffects
+    ? UI_TICK_MS
+    : matchStarted && matchEndMs === null
+      ? 1000
+      : null;
 
   useEffect(() => {
-    if (!needsUiTicker) {
+    if (uiTickerIntervalMs === null) {
       return;
     }
-    const interval = window.setInterval(() => setNowMs(Date.now()), UI_TICK_MS);
+    const interval = window.setInterval(() => setNowMs(Date.now()), uiTickerIntervalMs);
     return () => window.clearInterval(interval);
-  }, [needsUiTicker]);
+  }, [uiTickerIntervalMs]);
 
   useEffect(() => {
     if (!matchStarted || !showIntro) {
@@ -1786,8 +1889,11 @@ export function MatchPage(): JSX.Element {
     setResolvedMoves(0);
     if (queueRanked && isAuthenticated && accessToken !== null && user?.id !== undefined) {
       try {
-        const season = await fetchActiveSeason();
-        const currentRating = await fetchUserRating(user.id, season.id);
+        const season = await withRetry(() => fetchActiveSeason(), { attempts: 3, baseDelayMs: 140 });
+        const currentRating = await withRetry(
+          () => fetchUserRating(user.id, season.id),
+          { attempts: 3, baseDelayMs: 140 },
+        );
         setRatingBaseline({
           seasonId: season.id,
           rating: currentRating.rating,
@@ -1945,6 +2051,9 @@ export function MatchPage(): JSX.Element {
           return;
         } catch (error) {
           lastError = error;
+          if (isPersistenceConflictError(error)) {
+            break;
+          }
           if (isFatalPersistenceError(error)) {
             break;
           }
@@ -1989,6 +2098,11 @@ export function MatchPage(): JSX.Element {
         .catch((error) => {
           const message =
             error instanceof Error ? error.message : "Error desconocido al guardar la jugada";
+          if (isPersistenceConflictError(error)) {
+            setPersistError(null);
+            setPersistStatus("Conflicto de sincronizacion remoto: jugada obsoleta descartada.");
+            return;
+          }
           if (isFatalPersistenceError(error)) {
             disableRemotePersistence(`Persistencia detenida: ${message}`);
             return;
@@ -2194,7 +2308,14 @@ export function MatchPage(): JSX.Element {
       }
       const cell = board.grid[row][col];
       if (cell === board.current_player) {
+        const movesFromCell = allCurrentMoves.filter((move) => move.r1 === row && move.c1 === col);
         playSfx(SFX.uiClick, 0.24);
+        if (movesFromCell.length === 0) {
+          // UX guard: selecting immobile pieces looked like a dead click because no target highlights appear.
+          setSelected(null);
+          setStatus("Esa ficha no tiene movimientos legales. Prueba otra.");
+          return;
+        }
         setSelected([row, col]);
         return;
       }
@@ -2207,12 +2328,24 @@ export function MatchPage(): JSX.Element {
           playSfx(SFX.uiClick, 0.2);
           setSelected(null);
         }
+        setStatus("Movimiento invalido: elige una casilla resaltada.");
         return;
       }
       playSfx(SFX.uiClick, 0.2);
       void commitHumanMove(candidate);
     },
-    [board, commitHumanMove, interactionLocked, isSpectate, matchStarted, selected, selectedMoves, showIntro, sideController],
+    [
+      allCurrentMoves,
+      board,
+      commitHumanMove,
+      interactionLocked,
+      isSpectate,
+      matchStarted,
+      selected,
+      selectedMoves,
+      showIntro,
+      sideController,
+    ],
   );
 
   const previewOrigin = previewMove ? keyToCell(cellKey(previewMove.r1, previewMove.c1)) : null;
@@ -2228,6 +2361,13 @@ export function MatchPage(): JSX.Element {
           y2: cellCenterPercent(previewTarget.row),
         }
       : null;
+  const isHumanTurnInteractive =
+    matchStarted &&
+    !isSpectate &&
+    !interactionLocked &&
+    !isGameOver(board) &&
+    sideController(board.current_player) === "human";
+  const boardCursorClass = isHumanTurnInteractive ? "cursor-pointer" : "cursor-not-allowed";
 
   const onStartButtonHover = useCallback(() => {
     if (matchStarted) {
@@ -2240,47 +2380,6 @@ export function MatchPage(): JSX.Element {
     lastHoverSfxAtRef.current = now;
     playSfx(SFX.uiHover, 1.0);
   }, [matchStarted]);
-
-  const onBoardMouseMove = useCallback((event: MouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const nx = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
-    const ny = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
-    const spotlightX = Math.max(12, Math.min(88, 50 + nx * 21));
-    const spotlightY = Math.max(12, Math.min(88, 45 + ny * 18));
-    boardTiltPendingRef.current = {
-      x: -(ny * BOARD_TILT_MAX_DEG),
-      y: nx * BOARD_TILT_MAX_DEG,
-    };
-    boardSpotlightPendingRef.current = {
-      x: spotlightX,
-      y: spotlightY,
-      active: true,
-    };
-    if (boardTiltRafRef.current !== null) {
-      return;
-    }
-    boardTiltRafRef.current = window.requestAnimationFrame(() => {
-      boardTiltRafRef.current = null;
-      setBoardTilt(boardTiltPendingRef.current);
-      setBoardSpotlight(boardSpotlightPendingRef.current);
-    });
-  }, []);
-
-  const onBoardMouseEnter = useCallback(() => {
-    boardSpotlightPendingRef.current = { x: 50, y: 44, active: true };
-    setBoardSpotlight(boardSpotlightPendingRef.current);
-  }, []);
-
-  const onBoardMouseLeave = useCallback(() => {
-    if (boardTiltRafRef.current !== null) {
-      window.cancelAnimationFrame(boardTiltRafRef.current);
-      boardTiltRafRef.current = null;
-    }
-    boardTiltPendingRef.current = { x: 0, y: 0 };
-    boardSpotlightPendingRef.current = BOARD_SPOTLIGHT_IDLE;
-    setBoardTilt({ x: 0, y: 0 });
-    setBoardSpotlight(BOARD_SPOTLIGHT_IDLE);
-  }, []);
 
   return (
     <AppShell onNavigateAttempt={requestExitForNavigation} onLogoutAttempt={requestExitForLogout}>
@@ -2397,80 +2496,85 @@ export function MatchPage(): JSX.Element {
                 </div>
               </div>
             ) : null}
-            <motion.div
-              className={`relative aspect-square max-w-[620px] [perspective:1200px] ${isQueueMatchView ? "mx-auto" : ""}`}
-              onMouseEnter={onBoardMouseEnter}
-              onMouseMove={onBoardMouseMove}
-              onMouseLeave={onBoardMouseLeave}
-            >
+            <motion.div className={`relative aspect-square max-w-[620px] ${boardCursorClass} ${isQueueMatchView ? "mx-auto" : ""}`}>
+              <motion.div
+                aria-hidden="true"
+                className="pointer-events-none absolute -inset-2 z-0 rounded-[1.35rem] blur-2xl"
+                style={{
+                  background:
+                    "radial-gradient(circle at 50% 45%, rgba(132,204,22,0.14), rgba(132,204,22,0.035) 36%, rgba(0,0,0,0) 72%)",
+                }}
+                animate={{
+                  opacity: [0.09, 0.16, 0.09],
+                  scale: [0.995, 1.01, 0.995],
+                }}
+                transition={{ duration: 14, repeat: Infinity, ease: "easeInOut" }}
+              />
               <motion.div
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-x-[6%] bottom-0 z-0 h-12 rounded-[50%] bg-black/65 blur-xl"
                 animate={{
-                  opacity: boardSpotlight.active ? 0.48 : 0.36,
-                  x: boardTilt.y * 2.4,
-                  y: -boardTilt.x * 1.3,
-                  scale: boardSpotlight.active ? 1.04 : 1,
+                  opacity: [0.24, 0.33, 0.24],
+                  scale: [0.99, 1.015, 0.99],
                 }}
-                transition={{
-                  opacity: { duration: 0.25, ease: "easeOut" },
-                  x: { type: "spring", stiffness: 120, damping: 20, mass: 0.75 },
-                  y: { type: "spring", stiffness: 120, damping: 20, mass: 0.75 },
-                  scale: { duration: 0.25, ease: "easeOut" },
-                }}
+                transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
               />
               <motion.div
-                className="relative grid h-full grid-cols-7 gap-1 rounded-xl border border-zinc-800 bg-[radial-gradient(circle_at_50%_-20%,rgba(132,204,22,0.22),rgba(0,0,0,0))] p-2 will-change-transform [transform-style:preserve-3d]"
+                className="relative grid h-full grid-cols-7 gap-[2px] rounded-xl border border-zinc-800 bg-[radial-gradient(circle_at_50%_-20%,rgba(132,204,22,0.2),rgba(0,0,0,0))] p-2"
                 animate={{
-                  rotateX: boardTilt.x,
-                  rotateY: boardTilt.y,
-                  scale: boardSpotlight.active ? 1.008 : 1,
-                  y: boardSpotlight.active ? -1.4 : 0,
                   boxShadow: [
                     "0 18px 40px rgba(0,0,0,0.34), 0 0 0px rgba(132,204,22,0.0)",
-                    "0 22px 46px rgba(0,0,0,0.38), 0 0 28px rgba(132,204,22,0.16)",
+                    "0 20px 43px rgba(0,0,0,0.35), 0 0 14px rgba(132,204,22,0.08)",
                     "0 18px 40px rgba(0,0,0,0.34), 0 0 0px rgba(132,204,22,0.0)",
                   ],
                 }}
-                transition={{
-                  rotateX: { type: "spring", stiffness: 130, damping: 20, mass: 0.8 },
-                  rotateY: { type: "spring", stiffness: 130, damping: 20, mass: 0.8 },
-                  scale: { duration: 0.24, ease: "easeOut" },
-                  y: { duration: 0.24, ease: "easeOut" },
-                  boxShadow: { duration: 4.6, repeat: Infinity, ease: "easeInOut" },
-                }}
+                transition={{ boxShadow: { duration: 10.5, repeat: Infinity, ease: "easeInOut" } }}
               >
                 <motion.div
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-0 z-20 rounded-xl"
                   style={{
-                    background: `radial-gradient(circle at ${boardSpotlight.x}% ${boardSpotlight.y}%, rgba(190,242,100,0.32), rgba(190,242,100,0.07) 26%, rgba(0,0,0,0) 58%)`,
+                    background:
+                      "radial-gradient(circle at 50% 46%, rgba(190,242,100,0.2), rgba(190,242,100,0.045) 32%, rgba(0,0,0,0) 62%)",
                   }}
-                  animate={{ opacity: boardSpotlight.active ? [0.62, 0.85, 0.62] : [0.34, 0.48, 0.34] }}
-                  transition={{ duration: boardSpotlight.active ? 2.2 : 3.4, repeat: Infinity, ease: "easeInOut" }}
+                  animate={{ opacity: [0.24, 0.34, 0.24], scale: [0.996, 1.005, 0.996] }}
+                  transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
                 />
                 <motion.div
-                  className="pointer-events-none absolute inset-0 z-20 rounded-xl opacity-35"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 z-20 rounded-xl"
                   style={{
                     background:
-                      "repeating-linear-gradient(180deg, rgba(255,255,255,0.08) 0px, rgba(255,255,255,0.08) 1px, rgba(0,0,0,0) 2px, rgba(0,0,0,0) 4px)",
+                      "linear-gradient(112deg, rgba(255,255,255,0) 39%, rgba(255,255,255,0.075) 50%, rgba(255,255,255,0) 61%)",
+                    mixBlendMode: "screen",
                   }}
-                  animate={{ backgroundPositionY: ["0px", "120px"] }}
-                  transition={{ duration: 4.6, ease: "linear", repeat: Infinity }}
+                  animate={{ x: ["-12%", "12%", "-12%"], opacity: [0.0, 0.12, 0.0] }}
+                  transition={{ duration: 17, repeat: Infinity, ease: "easeInOut" }}
                 />
                 <motion.div
-                  className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-[55%] w-[55%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-lime-200/20"
-                  animate={{ scale: [0.94, 1.03, 0.94], opacity: [0.2, 0.42, 0.2] }}
-                  transition={{ duration: 3.6, ease: "easeInOut", repeat: Infinity }}
+                  className="pointer-events-none absolute inset-0 z-20 rounded-xl opacity-[0.18]"
+                  style={{
+                    background: [
+                      "repeating-linear-gradient(180deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, rgba(0,0,0,0) 3px, rgba(0,0,0,0) 8px)",
+                      "repeating-linear-gradient(90deg, rgba(255,255,255,0.016) 0px, rgba(255,255,255,0.016) 1px, rgba(0,0,0,0) 4px, rgba(0,0,0,0) 10px)",
+                    ].join(","),
+                  }}
+                  animate={{ backgroundPositionY: ["0px", "64px"], backgroundPositionX: ["0px", "40px"] }}
+                  transition={{ duration: 22, ease: "linear", repeat: Infinity }}
+                />
+                <motion.div
+                  className="pointer-events-none absolute inset-0 z-20 rounded-xl border border-lime-100/8"
+                  animate={{ opacity: [0.2, 0.3, 0.2] }}
+                  transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
                 />
                 <motion.div
                   className="pointer-events-none absolute inset-0 z-20 rounded-xl"
                   style={{
                     background:
-                      "radial-gradient(circle at 50% 45%, rgba(132,204,22,0.08), rgba(0,0,0,0.0) 42%, rgba(0,0,0,0.32) 100%)",
+                      "radial-gradient(circle at 50% 45%, rgba(132,204,22,0.06), rgba(0,0,0,0.0) 44%, rgba(0,0,0,0.34) 100%)",
                   }}
-                  animate={{ opacity: [0.75, 0.9, 0.75] }}
-                  transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+                  animate={{ opacity: [0.64, 0.77, 0.64] }}
+                  transition={{ duration: 11.5, repeat: Infinity, ease: "easeInOut" }}
                 />
                 {showIntro && (
                   <motion.div
@@ -2882,11 +2986,7 @@ export function MatchPage(): JSX.Element {
                   const key = cellKey(r, c);
                   const isSelected = selected !== null && selected[0] === r && selected[1] === c;
                   const isTarget = selectedTargets.has(key);
-                  const canPick =
-                    matchStarted &&
-                    !isSpectate &&
-                    sideController(board.current_player) === "human" &&
-                    cell === board.current_player;
+                  const canPick = isHumanTurnInteractive && cell === board.current_player;
                   const isPreviewOrigin = previewMove !== null && previewMove.r1 === r && previewMove.c1 === c;
                   const isPreviewTarget = previewMove !== null && previewMove.r2 === r && previewMove.c2 === c;
                   const isRecentOrigin = lastOrigin !== null && lastOrigin.row === r && lastOrigin.col === c;
@@ -2913,12 +3013,12 @@ export function MatchPage(): JSX.Element {
                               : canPick
                                 ? "border-zinc-700 bg-zinc-900/60 hover:border-zinc-500"
                                 : "border-zinc-800 bg-zinc-950/60"
-                      }`}
+                      } cursor-inherit`}
                     >
                       {cell !== 0 && (
                         <motion.span
                           layout
-                          className={`h-4/5 w-4/5 rounded-full border-2 transition ${
+                          className={`pointer-events-none h-4/5 w-4/5 rounded-full border-2 transition ${
                             cell === PLAYER_1
                               ? "border-zinc-200 bg-zinc-100 shadow-[0_0_14px_rgba(255,255,255,0.35)]"
                               : "border-lime-300 bg-lime-400 shadow-[0_0_16px_rgba(132,204,22,0.45)]"
@@ -3424,6 +3524,19 @@ export function MatchPage(): JSX.Element {
                       : "humano"}
                 </p>
               </div>
+            </motion.div>
+            <motion.div
+              className="rounded-md border border-zinc-700 bg-zinc-950/75 px-3 py-2"
+              variants={panelSectionVariants}
+              custom={0.17}
+            >
+              <p className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Estado de partida</p>
+              <p data-testid="match-status-text" className="mt-1 text-xs text-zinc-100">
+                {status}
+              </p>
+              <p data-testid="match-sync-status-text" className="mt-1 text-[11px] text-zinc-400">
+                {persistStatus}
+              </p>
             </motion.div>
 
             {gameFinished ? (

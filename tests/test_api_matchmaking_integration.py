@@ -87,6 +87,7 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
         join_payload = join_resp.json()
         self.assertEqual(join_payload["status"], "matched")
         self.assertEqual(join_payload["matched_with"], "bot")
+        self.assertEqual(join_payload["opponent_username"], "mm-bot-hard")
         self.assertIsNotNone(join_payload["game_id"])
 
         game_id = join_payload["game_id"]
@@ -119,6 +120,7 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
         self.assertEqual(join_2.status_code, 200)
         self.assertEqual(join_2.json()["status"], "matched")
         self.assertEqual(join_2.json()["matched_with"], "human")
+        self.assertEqual(join_2.json()["opponent_username"], "mm-p1")
         self.assertIsNotNone(join_2.json()["game_id"])
 
         status_1 = self.client.get(
@@ -129,6 +131,7 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
         status_payload = status_1.json()
         self.assertEqual(status_payload["status"], "matched")
         self.assertEqual(status_payload["game_id"], join_2.json()["game_id"])
+        self.assertEqual(status_payload["opponent_username"], "mm-p2")
 
     def test_queue_human_match_finish_updates_ratings(self) -> None:
         p1 = self._register_and_login("mm-rated-p1", "mm-rated-p1@example.com")
@@ -266,6 +269,7 @@ class TestApiMatchmakingIntegration(unittest.TestCase):
             status_event = websocket.receive_json()
             self.assertEqual(status_event["type"], "queue.status")
             self.assertEqual(status_event["payload"]["status"], "waiting")
+            self.assertIsNone(status_event["payload"]["opponent_username"])
 
     def test_queue_ws_rejects_missing_token(self) -> None:
         with self.assertRaises(WebSocketDisconnect) as ctx, self.client.websocket_connect(

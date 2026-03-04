@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { LandingPage } from "@/pages/landing/LandingPage";
 import { RankingPage } from "@/pages/ranking/RankingPage";
 import { MatchPage } from "@/pages/match/MatchPage";
+import { LobbyPage } from "@/pages/lobby/LobbyPage";
 import { LoginPage } from "@/pages/auth/LoginPage";
 import { RegisterPage } from "@/pages/auth/RegisterPage";
 import { ProfilePage } from "@/pages/profile/ProfilePage";
@@ -13,6 +14,7 @@ export function AppRoutes(): JSX.Element {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/ranking" element={<RankingPage />} />
+      <Route path="/lobby" element={<LobbyPage />} />
       <Route path="/match" element={<MatchPage />} />
       <Route
         path="/auth/login"

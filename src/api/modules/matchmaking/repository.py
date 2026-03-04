@@ -123,6 +123,12 @@ class MatchmakingRepository:
     async def get_entry_by_id(self, queue_id: UUID) -> QueueEntry | None:
         return await self.session.get(QueueEntry, queue_id)
 
+    async def get_game(self, game_id: UUID) -> Game | None:
+        return await self.session.get(Game, game_id)
+
+    async def get_user(self, user_id: UUID) -> User | None:
+        return await self.session.get(User, user_id)
+
     async def list_matched_entries_for_game(self, *, season_id: UUID, game_id: UUID) -> list[QueueEntry]:
         stmt = (
             select(QueueEntry)

@@ -213,10 +213,23 @@ class GameRepository:
         await self.session.refresh(move)
         return move
 
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
     async def next_ply(self, game_id: UUID) -> int:
         stmt = select(func.count()).select_from(GameMove).where(GameMove.game_id == game_id)
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
+
+    async def get_last_move(self, game_id: UUID) -> GameMove | None:
+        stmt = (
+            select(GameMove)
+            .where(GameMove.game_id == game_id)
+            .order_by(col(GameMove.ply).desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def list_moves(self, game_id: UUID, limit: int = 200) -> list[GameMove]:
         stmt = select(GameMove).where(GameMove.game_id == game_id).limit(limit)

@@ -14,6 +14,7 @@ import {
   Hourglass,
   Mail,
   PauseCircle,
+  Settings2,
   Shield,
   Sparkles,
   Swords,
@@ -564,6 +565,25 @@ export function ProfilePage(): JSX.Element {
               onAccept={(gameId) => acceptInvitationMutation.mutate(gameId)}
               onReject={(gameId) => rejectInvitationMutation.mutate(gameId)}
             />
+          </CardContent>
+        </Card>
+        <Card id="laboratorio" className="border-zinc-800/90 bg-zinc-950/60">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Settings2 className="h-4 w-4 text-zinc-400" />
+              Laboratorio de partidas
+            </CardTitle>
+            <CardDescription>
+              Ajustes avanzados y simulaciones fuera del flujo principal de cola competitiva.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <Button asChild type="button" size="sm" variant="secondary" className="w-full">
+              <Link to="/match?setup=config">Abrir configuracion avanzada</Link>
+            </Button>
+            <Button asChild type="button" size="sm" variant="ghost" className="w-full border border-zinc-700/80 bg-zinc-950/70 text-zinc-300 hover:bg-zinc-900/70 hover:text-zinc-100">
+              <Link to="/lobby">Ir a crear sala</Link>
+            </Button>
           </CardContent>
         </Card>
 

@@ -73,6 +73,8 @@ export type PersistedGameSummary = {
   rated: boolean;
   player1_id: string | null;
   player2_id: string | null;
+  player1_username?: string | null;
+  player2_username?: string | null;
   player1_agent: "human" | "heuristic" | "model";
   player2_agent: "human" | "heuristic" | "model";
 };

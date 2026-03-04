@@ -87,6 +87,7 @@ describe("LandingPage queue", () => {
       season_id: "s-1",
       game_id: null,
       matched_with: null,
+      opponent_username: null,
       created_at: "2026-02-23T00:00:00",
       updated_at: "2026-02-23T00:00:00",
     });
@@ -111,6 +112,8 @@ describe("LandingPage queue", () => {
       rated: true,
       player1_id: "u1",
       player2_id: "bot-1",
+      player1_username: "demo",
+      player2_username: "aetherglyph",
       player1_agent: "human",
       player2_agent: "heuristic",
     });
@@ -161,6 +164,7 @@ describe("LandingPage queue", () => {
       season_id: "s-1",
       game_id: "game-1",
       matched_with: "bot",
+      opponent_username: null,
       created_at: "2026-02-23T00:00:00",
       updated_at: "2026-02-23T00:00:01",
     });
@@ -175,6 +179,27 @@ describe("LandingPage queue", () => {
     expect(screen.queryByRole("button", { name: /rechazar/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /cerrar modal/i })).toBeInTheDocument();
   }, 15000);
+
+  it("shows opponent name immediately from matchmaking payload", async () => {
+    fetchPersistedGameSummaryMock.mockReturnValueOnce(new Promise(() => {}));
+    joinRankedQueueMock.mockResolvedValueOnce({
+      queue_id: "q-3",
+      status: "matched",
+      season_id: "s-1",
+      game_id: "game-99",
+      matched_with: "human",
+      opponent_username: "mm-p2",
+      created_at: "2026-02-23T00:00:00",
+      updated_at: "2026-02-23T00:00:01",
+    });
+
+    renderWithProviders(<LandingPage />, { route: "/" });
+    fireEvent.click(screen.getByRole("button", { name: /buscar partida/i }));
+
+    expect(await screen.findByText(/partida encontrada/i)).toBeInTheDocument();
+    expect(screen.getByText(/mm-p2/i)).toBeInTheDocument();
+    expect(fetchPersistedGameSummaryMock).not.toHaveBeenCalled();
+  });
 
   it("opens guest modal when unauthenticated user clicks Buscar partida", async () => {
     useAuthMock.mockReturnValue({
@@ -204,6 +229,12 @@ describe("LandingPage queue", () => {
     await waitFor(() => {
       expect(prefetchPublicPlayersMock).toHaveBeenCalledWith("token-123", { limit: 200 });
     });
+  });
+
+  it("shows a dedicated Crear sala entry for custom lobbies", () => {
+    renderWithProviders(<LandingPage />, { route: "/" });
+
+    expect(screen.getByRole("link", { name: /crear sala/i })).toHaveAttribute("href", "/lobby");
   });
 
 });

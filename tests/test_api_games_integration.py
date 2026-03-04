@@ -270,6 +270,40 @@ class TestApiGamesIntegration(unittest.TestCase):
         )
         self.assertEqual(outsider_move.status_code, 403)
 
+    def test_manual_move_rejects_stale_board_snapshot(self) -> None:
+        user = self._register_and_login("gp-stale-user", "gp-stale-user@example.com")
+        create_resp = self.client.post(
+            "/api/v1/gameplay/games",
+            json={"queue_type": "casual"},
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        game_id = create_resp.json()["id"]
+
+        board = AtaxxBoard()
+        first_move = self.client.post(
+            f"/api/v1/gameplay/games/{game_id}/move/manual",
+            json={
+                "board": board_to_state(board),
+                "move": {"r1": 0, "c1": 0, "r2": 1, "c2": 1},
+                "mode": "manual",
+            },
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(first_move.status_code, 201)
+
+        stale_move = self.client.post(
+            f"/api/v1/gameplay/games/{game_id}/move/manual",
+            json={
+                "board": board_to_state(board),
+                "move": {"r1": 0, "c1": 0, "r2": 1, "c2": 1},
+                "mode": "manual",
+            },
+            headers={"Authorization": f"Bearer {user['access_token']}"},
+        )
+        self.assertEqual(stale_move.status_code, 409)
+        self.assertIn("stale", str(stale_move.json()["detail"]).lower())
+
     def test_create_game_rejects_same_player_on_both_sides(self) -> None:
         creator = self._register_and_login("gp-owner-same", "gp-owner-same@example.com")
         bot_id = self._create_bot_user_with_profile(

@@ -80,12 +80,17 @@ class MatchmakingService:
         refreshed = await self.repository.get_entry_by_id(entry.id)
         if refreshed is None:
             raise LookupError("Queue entry not found after join.")
+        opponent_username = await self._resolve_opponent_username(
+            actor_user_id=actor_user.id,
+            game_id=refreshed.matched_game_id,
+        )
         return QueueJoinResponse(
             queue_id=refreshed.id,
             status=self._status_value(refreshed.status),
             season_id=refreshed.season_id,
             game_id=game_id,
             matched_with=matched_with,
+            opponent_username=opponent_username,
             created_at=refreshed.created_at,
             updated_at=refreshed.updated_at,
         )
@@ -115,6 +120,16 @@ class MatchmakingService:
                 refreshed = await self.repository.get_entry_by_id(entry.id)
                 if refreshed is not None:
                     entry = refreshed
+        elif entry.status == QueueEntryStatus.MATCHED:
+            matched_with = await self._resolve_matched_with(
+                actor_user_id=actor_user.id,
+                game_id=entry.matched_game_id,
+            )
+
+        opponent_username = await self._resolve_opponent_username(
+            actor_user_id=actor_user.id,
+            game_id=entry.matched_game_id,
+        )
 
         return QueueStatusResponse(
             queue_id=entry.id,
@@ -122,6 +137,7 @@ class MatchmakingService:
             season_id=entry.season_id,
             game_id=entry.matched_game_id,
             matched_with=matched_with,
+            opponent_username=opponent_username,
             created_at=entry.created_at,
             updated_at=entry.updated_at,
         )
@@ -326,3 +342,53 @@ class MatchmakingService:
             if roll <= cumulative:
                 return bot_user
         return candidates[-1][0]
+
+    async def _resolve_opponent_username(
+        self,
+        *,
+        actor_user_id: UUID,
+        game_id: UUID | None,
+    ) -> str | None:
+        if game_id is None:
+            return None
+        game = await self.repository.get_game(game_id)
+        if game is None:
+            return None
+
+        opponent_user_id: UUID | None = None
+        if game.player1_id == actor_user_id:
+            opponent_user_id = game.player2_id
+        elif game.player2_id == actor_user_id:
+            opponent_user_id = game.player1_id
+        if opponent_user_id is None:
+            return None
+
+        opponent_user = await self.repository.get_user(opponent_user_id)
+        if opponent_user is None:
+            return None
+        return opponent_user.username
+
+    async def _resolve_matched_with(
+        self,
+        *,
+        actor_user_id: UUID,
+        game_id: UUID | None,
+    ) -> MatchedWith | None:
+        if game_id is None:
+            return None
+        game = await self.repository.get_game(game_id)
+        if game is None:
+            return None
+
+        opponent_user_id: UUID | None = None
+        if game.player1_id == actor_user_id:
+            opponent_user_id = game.player2_id
+        elif game.player2_id == actor_user_id:
+            opponent_user_id = game.player1_id
+        if opponent_user_id is None:
+            return None
+
+        opponent_user = await self.repository.get_user(opponent_user_id)
+        if opponent_user is None:
+            return None
+        return "bot" if opponent_user.is_bot else "human"

@@ -27,3 +27,8 @@ web/test-results/
 *.swp
 *.tmp
 node_modules/
+
+# Local runtime/debug artifacts that can grow very large.
+.tmp*
+*.log
+SCI-FI_UI_SFX_PACK.zip

@@ -80,6 +80,23 @@ function buildPrediction(board: BoardState): { move: null; value: number; board_
   };
 }
 
+function getBoardCells(container: HTMLElement): HTMLButtonElement[] {
+  const cells = Array.from(container.querySelectorAll<HTMLButtonElement>("button.aspect-square"));
+  if (cells.length !== 49) {
+    throw new Error(`Expected 49 board cells, got ${cells.length}.`);
+  }
+  return cells;
+}
+
+function boardCell(cells: HTMLButtonElement[], row: number, col: number): HTMLButtonElement {
+  const index = row * 7 + col;
+  const cell = cells[index];
+  if (cell === undefined) {
+    throw new Error(`Missing board cell at row=${row} col=${col}.`);
+  }
+  return cell;
+}
+
 describe("MatchPage spectator mode", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -188,6 +205,18 @@ describe("MatchPage spectator mode", () => {
       { timeout: 400 },
     );
   }, 15000);
+
+  it("applies setup=spectate intent from query params", async () => {
+    mockLocation.search = "?setup=spectate";
+    mockLocation.key = "match-setup-spectate";
+
+    render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Modo de partida")).toHaveValue("spectate");
+    });
+    expect(screen.getByTestId("match-status-text")).toHaveTextContent(/sala observador/i);
+  });
 
   it("locks AI selectors once spectate match starts", async () => {
     predictAIMoveMock.mockImplementation(async (board: BoardState) => buildPrediction(board));
@@ -387,6 +416,66 @@ describe("MatchPage automatic persistence", () => {
           player1Agent: "heuristic",
           player2Agent: "heuristic",
         }),
+      );
+    });
+  }, 15000);
+
+  it("shows explicit feedback when selecting an invalid target cell", async () => {
+    createPersistedGameMock.mockResolvedValue("game-invalid-target");
+    predictAIMoveMock.mockImplementation(async (board: BoardState) => buildPrediction(board));
+    const view = render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Rival (jugador)")).toHaveValue("bot-p1");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar partida" }));
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("match-status-text")).toHaveTextContent(/Comienza la partida|Turno humano/);
+      },
+      { timeout: 7000 },
+    );
+
+    const cells = getBoardCells(view.container);
+    fireEvent.click(boardCell(cells, 0, 0));
+    fireEvent.click(boardCell(cells, 0, 6));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("match-status-text")).toHaveTextContent(
+        "Movimiento invalido: elige una casilla resaltada.",
+      );
+    });
+  }, 15000);
+
+  it("does not retry stale persistence conflicts for manual moves", async () => {
+    createPersistedGameMock.mockResolvedValue("game-conflict");
+    predictAIMoveMock.mockImplementation(async (board: BoardState) => buildPrediction(board));
+    storeManualMoveMock.mockRejectedValue(new Error("stale move conflict"));
+    const view = render(<MatchPage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Rival (jugador)")).toHaveValue("bot-p1");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar partida" }));
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("match-status-text")).toHaveTextContent(/Comienza la partida|Turno humano/);
+      },
+      { timeout: 7000 },
+    );
+
+    const cells = getBoardCells(view.container);
+    fireEvent.click(boardCell(cells, 0, 0));
+    fireEvent.click(boardCell(cells, 1, 0));
+
+    await waitFor(() => {
+      expect(storeManualMoveMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("match-sync-status-text")).toHaveTextContent(
+        "Conflicto de sincronizacion remoto: jugada obsoleta descartada.",
       );
     });
   }, 15000);
@@ -648,6 +737,9 @@ describe("MatchPage queued human vs human", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/humano vs humano/i)).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(openPersistedGameSocketMock).toHaveBeenCalled();
     });
     if (wsEventHandler === null) {
       throw new Error("Expected websocket handler to be initialized.");
