@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import sys
+import types
 import unittest
 from concurrent.futures import Future
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import MagicMock, Mock, patch
 
 from training.checkpointing import (
     HuggingFaceCheckpointer,
@@ -26,6 +31,57 @@ class TestTrainingCheckpointing(unittest.TestCase):
         checkpointer.run_id = "policy_spatial_v1"
         repo_path = checkpointer._repo_path("model_iter_040.pt")
         self.assertEqual(repo_path, "runs/policy_spatial_v1/model_iter_040.pt")
+
+    def test_repo_path_for_run_allows_explicit_source_namespace(self) -> None:
+        repo_path = HuggingFaceCheckpointer._repo_path_for_run(
+            run_id="policy_spatial_v2",
+            filename="model_iter_001.pt",
+        )
+        self.assertEqual(repo_path, "runs/policy_spatial_v2/model_iter_001.pt")
+
+    def test_load_latest_checkpoint_can_bootstrap_from_explicit_run_without_buffer(self) -> None:
+        sample_value = "sample_value"
+        checkpointer = object.__new__(HuggingFaceCheckpointer)
+        checkpointer.repo_id = "dieg0code/ataxx-zero"
+        checkpointer.token = sample_value
+        checkpointer.run_id = "policy_target_v2"
+        checkpointer.local_dir = Path()
+        checkpointer.api = Mock()
+        checkpointer.api.list_repo_files.return_value = [
+            "runs/policy_source_v1/model_iter_022.pt",
+            "runs/policy_source_v1/buffer_iter_022.npz",
+            "runs/policy_target_v2/model_iter_010.pt",
+        ]
+
+        hf_download_mock = MagicMock(return_value="model_iter_022.pt")
+        hub_module = cast(Any, types.ModuleType("huggingface_hub"))
+        hub_module.hf_hub_download = hf_download_mock
+
+        system = Mock()
+        buffer = Mock()
+
+        with patch.dict(sys.modules, {"huggingface_hub": hub_module}), patch(
+            "training.checkpointing.torch.load"
+        ) as torch_load_mock:
+            torch_load_mock.return_value = {"state_dict": {}}
+            loaded_iter = checkpointer.load_latest_checkpoint(
+                system=system,
+                buffer=buffer,
+                run_id="policy_source_v1",
+                load_buffer=False,
+            )
+
+        self.assertEqual(loaded_iter, 22)
+        hf_download_mock.assert_called_once_with(
+            repo_id="dieg0code/ataxx-zero",
+            filename="runs/policy_source_v1/model_iter_022.pt",
+            repo_type="model",
+            token=sample_value,
+            local_dir=".",
+        )
+        system.load_state_dict.assert_called_once_with({})
+        buffer.clear.assert_not_called()
+        buffer.save_game.assert_not_called()
 
     def test_ensure_hf_ready_raises_when_hf_enabled_without_checkpointer(self) -> None:
         CONFIG["hf_enabled"] = True

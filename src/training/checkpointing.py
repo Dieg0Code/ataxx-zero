@@ -70,7 +70,11 @@ class HuggingFaceCheckpointer:
         self.api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
 
     def _repo_path(self, filename: str) -> str:
-        return f"runs/{self.run_id}/{filename}"
+        return self._repo_path_for_run(self.run_id, filename)
+
+    @staticmethod
+    def _repo_path_for_run(run_id: str, filename: str) -> str:
+        return f"runs/{run_id}/{filename}"
 
     def save_checkpoint_local(
         self,
@@ -157,12 +161,23 @@ class HuggingFaceCheckpointer:
         )
         self.cleanup_local_checkpoints(keep_last_n=keep_last_n)
 
-    def load_latest_checkpoint(self, *, system: AtaxxZero, buffer: ReplayBuffer) -> int:
+    def load_latest_checkpoint(
+        self,
+        *,
+        system: AtaxxZero,
+        buffer: ReplayBuffer,
+        run_id: str | None = None,
+        load_buffer: bool = True,
+    ) -> int:
         hub_mod = __import__("huggingface_hub", fromlist=["hf_hub_download"])
         hf_hub_download = hub_mod.hf_hub_download
 
+        source_run_id = (run_id or self.run_id).strip()
+        if source_run_id == "":
+            raise ValueError("Checkpoint source run_id cannot be empty.")
+
         files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="model")
-        run_prefix = self._repo_path("")
+        run_prefix = self._repo_path_for_run(source_run_id, "")
         model_files = [
             f
             for f in files
@@ -175,7 +190,7 @@ class HuggingFaceCheckpointer:
 
         latest_iter = max(int(Path(name).stem.split("_")[2]) for name in model_files)
         model_name = f"model_iter_{latest_iter:03d}.pt"
-        model_repo_path = self._repo_path(model_name)
+        model_repo_path = self._repo_path_for_run(source_run_id, model_name)
         model_path = hf_hub_download(
             repo_id=self.repo_id,
             filename=model_repo_path,
@@ -197,25 +212,26 @@ class HuggingFaceCheckpointer:
                 "reentrena o usa carga parcial manual (strict=False)."
             ) from exc
 
-        buffer_name = f"buffer_iter_{latest_iter:03d}.npz"
-        buffer_repo_path = self._repo_path(buffer_name)
-        try:
-            buffer_path = hf_hub_download(
-                repo_id=self.repo_id,
-                filename=buffer_repo_path,
-                repo_type="model",
-                token=self.token,
-                local_dir=str(self.local_dir),
-            )
-            data = np.load(buffer_path)
-            observations = data["observations"]
-            policies = data["policies"]
-            values = data["values"]
-            examples = list(zip(observations, policies, values, strict=True))
-            buffer.clear()
-            buffer.save_game(examples)
-        except (OSError, KeyError, ValueError):
-            pass
+        if load_buffer:
+            buffer_name = f"buffer_iter_{latest_iter:03d}.npz"
+            buffer_repo_path = self._repo_path_for_run(source_run_id, buffer_name)
+            try:
+                buffer_path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=buffer_repo_path,
+                    repo_type="model",
+                    token=self.token,
+                    local_dir=str(self.local_dir),
+                )
+                data = np.load(buffer_path)
+                observations = data["observations"]
+                policies = data["policies"]
+                values = data["values"]
+                examples = list(zip(observations, policies, values, strict=True))
+                buffer.clear()
+                buffer.save_game(examples)
+            except (OSError, KeyError, ValueError):
+                pass
 
         return latest_iter
 
