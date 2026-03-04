@@ -56,6 +56,7 @@ from training.trainer_runtime import (  # noqa: E402
     resolve_trainer_precision,
 )
 
+
 def _build_train_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object]:
     from data.dataset import AtaxxDataset
 
@@ -289,7 +290,6 @@ def main() -> None:
         except Exception as exc:
             log(f"Model compile skipped due to runtime error: {exc}")
     buffer = ReplayBuffer(capacity=cfg_int("buffer_size"))
-
     hf_checkpointer = init_hf_checkpointer()
     ensure_hf_ready(hf_checkpointer)
     hf_upload_executor: ThreadPoolExecutor | None = None
