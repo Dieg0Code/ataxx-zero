@@ -70,10 +70,11 @@ function fallbackOpponentName(matchedWith: MatchedWith): string {
   return matchedWith === "human" ? "rival humano" : "bot rival";
 }
 
-function saveMatchedGame(gameId: string, matchedWith: MatchedWith): void {
+function saveMatchedGame(gameId: string, matchedWith: MatchedWith, opponentUsername: string | null): void {
   const payload: QueueMatch = {
     gameId,
     matchedWith,
+    opponentUsername,
     createdAt: Date.now(),
     source: "queue",
   };
@@ -470,12 +471,12 @@ export function LandingPage(): JSX.Element {
       if (accessToken !== null) {
         const decision = await acceptMatchedQueue(accessToken);
         if (decision.game_id !== null) {
-          saveMatchedGame(decision.game_id, pendingMatch.matchedWith);
+          saveMatchedGame(decision.game_id, pendingMatch.matchedWith, pendingMatch.opponentUsername);
         } else {
-          saveMatchedGame(pendingMatch.gameId, pendingMatch.matchedWith);
+          saveMatchedGame(pendingMatch.gameId, pendingMatch.matchedWith, pendingMatch.opponentUsername);
         }
       } else {
-        saveMatchedGame(pendingMatch.gameId, pendingMatch.matchedWith);
+        saveMatchedGame(pendingMatch.gameId, pendingMatch.matchedWith, pendingMatch.opponentUsername);
       }
       setPendingMatch(null);
       navigate("/match?queue=1", {
