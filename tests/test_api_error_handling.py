@@ -4,10 +4,11 @@ import sys
 import unittest
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.websockets import WebSocketDisconnect
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -45,6 +46,11 @@ def build_test_app() -> FastAPI:
     @app.get("/bad-value")
     def bad_value() -> None:
         raise ValueError("legacy game row has invalid enum")
+
+    @app.websocket("/ws-bad-value")
+    async def ws_bad_value(websocket: WebSocket) -> None:
+        await websocket.accept()
+        raise ValueError("invalid ws payload")
 
     return app
 
@@ -122,6 +128,12 @@ class TestApiErrorHandling(unittest.TestCase):
         self.assertEqual(payload["message"], "legacy game row has invalid enum")
         self.assertEqual(payload["detail"], "legacy game row has invalid enum")
         self.assertIn("request_id", payload)
+
+    def test_value_error_on_websocket_closes_with_policy_violation(self) -> None:
+        client = TestClient(build_test_app(), raise_server_exceptions=False)
+        with self.assertRaises(WebSocketDisconnect) as ctx, client.websocket_connect("/ws-bad-value") as websocket:
+            websocket.receive_json()
+        self.assertEqual(ctx.exception.code, 1008)
 
 
 if __name__ == "__main__":

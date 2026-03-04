@@ -4,7 +4,7 @@ import logging
 from http import HTTPStatus
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
@@ -14,7 +14,7 @@ from starlette.responses import Response
 logger = logging.getLogger("api.errors")
 
 
-def _resolve_request_id(request: Request) -> str:
+def _resolve_request_id(request: Request | WebSocket) -> str:
     request_id = getattr(request.state, "request_id", None)
     if isinstance(request_id, str) and request_id:
         return request_id
@@ -128,17 +128,23 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=422, content=body)
 
     @app.exception_handler(ValueError)
-    async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    async def value_error_handler(request: Request | WebSocket, exc: ValueError) -> JSONResponse | None:
         request_id = _resolve_request_id(request)
+        path = request.url.path if request.url is not None else "<unknown>"
+        method = request.method if isinstance(request, Request) else "WEBSOCKET"
         logger.warning(
             "value_error",
             extra={
                 "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
+                "method": method,
+                "path": path,
                 "error_detail": str(exc),
             },
         )
+        if isinstance(request, WebSocket):
+            reason = str(exc) or "Invalid value"
+            await request.close(code=1008, reason=reason[:120])
+            return None
         body = _build_error_body(
             status_code=422,
             request_id=request_id,
