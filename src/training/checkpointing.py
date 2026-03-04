@@ -276,6 +276,48 @@ def init_hf_checkpointer() -> HuggingFaceCheckpointer | None:
     )
 
 
+def resolve_hf_start_iteration(
+    *,
+    checkpointer: HuggingFaceCheckpointer,
+    system: AtaxxZero,
+    buffer: ReplayBuffer,
+) -> int:
+    """Resolve start iteration from HF, including bootstrap/reset semantics."""
+    bootstrap_run_id = cfg_str("hf_bootstrap_run_id").strip()
+    source_run_id = bootstrap_run_id or cfg_str("hf_run_id").strip()
+    reset_iteration = cfg_bool("hf_reset_iteration")
+
+    loaded_iteration = checkpointer.load_latest_checkpoint(
+        system=system,
+        buffer=buffer,
+        run_id=(bootstrap_run_id or None),
+        load_buffer=not reset_iteration,
+    )
+    if loaded_iteration <= 0:
+        log(f"No HF checkpoint found in run_id={source_run_id}; starting from scratch.")
+        return 0
+
+    if reset_iteration:
+        # Fresh-run bootstrap: keep learned weights but rebuild replay
+        # from scratch so warmup/curriculum can run from iteration 0.
+        buffer.clear()
+        log(
+            "HF bootstrap loaded "
+            f"iteration {loaded_iteration} from run_id={source_run_id}; "
+            "resetting iteration to 0 and clearing replay buffer.",
+        )
+        return 0
+
+    if bootstrap_run_id != "":
+        log(
+            "Resumed from HF checkpoint iteration "
+            f"{loaded_iteration} (source run_id={source_run_id}).",
+        )
+    else:
+        log(f"Resumed from HF checkpoint iteration {loaded_iteration}.")
+    return loaded_iteration
+
+
 def ensure_hf_ready(checkpointer: HuggingFaceCheckpointer | None) -> None:
     """Fail fast when HF checkpointing was requested but cannot be initialized."""
     if not cfg_bool("hf_enabled"):

@@ -27,6 +27,7 @@ from training.checkpointing import (  # noqa: E402
     drain_completed_hf_uploads,
     ensure_hf_ready,
     init_hf_checkpointer,
+    resolve_hf_start_iteration,
     should_save_iteration_checkpoint,
     wait_for_hf_uploads,
 )
@@ -54,7 +55,6 @@ from training.trainer_runtime import (  # noqa: E402
     resolve_trainer_hw,
     resolve_trainer_precision,
 )
-
 
 def _build_train_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object]:
     from data.dataset import AtaxxDataset
@@ -296,39 +296,12 @@ def main() -> None:
     hf_upload_futures: list[Future[None]] = []
     if hf_checkpointer is not None:
         hf_upload_executor = ThreadPoolExecutor(max_workers=1)
-        bootstrap_run_id = cfg_str("hf_bootstrap_run_id").strip()
-        source_run_id = bootstrap_run_id or cfg_str("hf_run_id").strip()
-        reset_iteration = cfg_bool("hf_reset_iteration")
         try:
-            loaded_iteration = hf_checkpointer.load_latest_checkpoint(
+            start_iteration = resolve_hf_start_iteration(
+                checkpointer=hf_checkpointer,
                 system=system,
                 buffer=buffer,
-                run_id=(bootstrap_run_id or None),
-                load_buffer=not reset_iteration,
             )
-            if loaded_iteration > 0:
-                if reset_iteration:
-                    # Fresh-run bootstrap: keep learned weights but rebuild replay
-                    # from scratch so warmup/curriculum can run from iteration 0.
-                    buffer.clear()
-                    start_iteration = 0
-                    log(
-                        "HF bootstrap loaded "
-                        f"iteration {loaded_iteration} from run_id={source_run_id}; "
-                        "resetting iteration to 0 and clearing replay buffer.",
-                    )
-                else:
-                    start_iteration = loaded_iteration
-                    if bootstrap_run_id != "":
-                        log(
-                            "Resumed from HF checkpoint iteration "
-                            f"{start_iteration} (source run_id={source_run_id}).",
-                        )
-                    else:
-                        log(f"Resumed from HF checkpoint iteration {start_iteration}.")
-            else:
-                start_iteration = 0
-                log(f"No HF checkpoint found in run_id={source_run_id}; starting from scratch.")
         except (ValueError, OSError):
             start_iteration = 0
             log("HF resume failed; starting from scratch.")
