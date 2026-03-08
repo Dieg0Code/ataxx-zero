@@ -25,6 +25,14 @@ class TestTrainingBootstrap(unittest.TestCase):
             self.assertEqual(int(np.count_nonzero(policy)), 1)
             self.assertIn(value, (-1.0, 0.0, 1.0))
 
+    def test_generate_imitation_data_supports_advanced_heuristic_level(self) -> None:
+        examples = generate_imitation_data(
+            n_games=2,
+            heuristic_level="sentinel",
+            seed=321,
+        )
+        self.assertGreater(len(examples), 0)
+
     def test_history_to_examples_assigns_value_by_player_perspective(self) -> None:
         obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)

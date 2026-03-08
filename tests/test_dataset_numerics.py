@@ -9,7 +9,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from data.dataset import AtaxxDataset, ValidationDataset
+from data.dataset import AtaxxDataset, ValidationDataset, split_train_val_examples
 from data.replay_buffer import ReplayBuffer
 from game.actions import ACTION_SPACE
 
@@ -76,6 +76,49 @@ class TestDatasetNumerics(unittest.TestCase):
         self.assertSetEqual(train_markers, {0.0, 1.0, 2.0, 3.0, 4.0, 5.0})
         self.assertSetEqual(val_markers, {6.0, 7.0})
         self.assertTrue(train_markers.isdisjoint(val_markers))
+
+    def test_split_train_val_examples_shuffle_is_reproducible(self) -> None:
+        examples: list[tuple[np.ndarray, np.ndarray, float]] = []
+        for idx in range(10):
+            obs = np.zeros((4, 7, 7), dtype=np.float32)
+            obs[0, 0, 0] = float(idx)
+            pi = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
+            pi[0] = 1.0
+            examples.append((obs, pi, 0.0))
+
+        train_a, val_a = split_train_val_examples(
+            all_examples=examples,
+            val_split=0.2,
+            shuffle=True,
+            seed=99,
+        )
+        train_b, val_b = split_train_val_examples(
+            all_examples=examples,
+            val_split=0.2,
+            shuffle=True,
+            seed=99,
+        )
+        _train_c, val_c = split_train_val_examples(
+            all_examples=examples,
+            val_split=0.2,
+            shuffle=True,
+            seed=101,
+        )
+
+        self.assertEqual(len(train_a), 8)
+        self.assertEqual(len(val_a), 2)
+        self.assertListEqual(
+            [float(sample[0][0, 0, 0]) for sample in train_a],
+            [float(sample[0][0, 0, 0]) for sample in train_b],
+        )
+        self.assertListEqual(
+            [float(sample[0][0, 0, 0]) for sample in val_a],
+            [float(sample[0][0, 0, 0]) for sample in val_b],
+        )
+        self.assertNotEqual(
+            [float(sample[0][0, 0, 0]) for sample in val_a],
+            [float(sample[0][0, 0, 0]) for sample in val_c],
+        )
 
 
 if __name__ == "__main__":

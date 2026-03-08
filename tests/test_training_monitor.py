@@ -24,6 +24,9 @@ class TestTrainingMonitor(unittest.TestCase):
             "episodes_vs_heuristic_easy": 1,
             "episodes_vs_heuristic_normal": 2,
             "episodes_vs_heuristic_hard": 2,
+            "episodes_vs_heuristic_apex": 1,
+            "episodes_vs_heuristic_gambit": 0,
+            "episodes_vs_heuristic_sentinel": 0,
         }
         metrics = {
             "train/loss": torch.tensor(2.0),
@@ -45,7 +48,7 @@ class TestTrainingMonitor(unittest.TestCase):
         text = buffer.getvalue()
         self.assertIn("[02/10] sp=38s tr=9s buf=3200", text)
         self.assertIn("W/L/D=4/3/1", text)
-        self.assertIn("heuristic easy:20% normal:40% hard:40%", text)
+        self.assertIn("heuristic easy:17% normal:33% hard:33% apex:17% gambit:0% sentinel:0%", text)
 
     def test_log_iteration_alerts(self) -> None:
         monitor = TrainingMonitor(total_iterations=10, log_every=5)
@@ -81,7 +84,18 @@ class TestTrainingMonitor(unittest.TestCase):
         self.assertTrue(is_best)
         self.assertIn("*** BEST ***", text)
 
+    def test_log_eval_composite_tracks_best_score(self) -> None:
+        monitor = TrainingMonitor(total_iterations=20, log_every=5)
+        level_scores = {"hard": 0.52, "apex": 0.48, "sentinel": 0.50}
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            is_best = monitor.log_eval_composite(iteration=7, level_scores=level_scores)
+        text = buffer.getvalue()
+        self.assertTrue(is_best)
+        self.assertIn("EVAL_COMPOSITE score=0.500", text)
+        self.assertIn("*** BEST ***", text)
+
 
 if __name__ == "__main__":
     unittest.main()
-

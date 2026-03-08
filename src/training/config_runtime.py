@@ -7,6 +7,8 @@ from typing import Literal, cast
 
 import numpy as np
 
+from agents.heuristic import HEURISTIC_LEVELS, is_supported_heuristic_level
+
 TrainerPrecision = Literal[
     "16",
     "16-mixed",
@@ -35,11 +37,14 @@ CONFIG: dict[str, int | float | bool | str] = {
     "episode_log_every": 25,
     "epochs": 5,
     "batch_size": 512,
-    "learning_rate": 1e-3,
+    "learning_rate": 3e-4,
     "weight_decay": 1e-4,
     "value_loss_coeff": 0.5,
     "buffer_size": 50_000,
     "val_split": 0.1,
+    "shuffle_train_val_split": True,
+    "train_recent_fraction": 0.7,
+    "train_recent_window_fraction": 0.4,
     "d_model": 128,
     "nhead": 8,
     "num_layers": 6,
@@ -92,6 +97,10 @@ CONFIG: dict[str, int | float | bool | str] = {
     "eval_games": 12,
     "eval_sims": 400,
     "eval_heuristic_level": "hard",
+    "eval_heuristic_levels": "hard,apex,sentinel",
+    "restore_best_on_regression": True,
+    "eval_regression_delta": 0.03,
+    "eval_regression_patience": 2,
     "selfplay_workers": 8,
     "selfplay_progress_every_s": 120.0,
     "selfplay_episode_timeout_s": 1800.0,
@@ -99,6 +108,8 @@ CONFIG: dict[str, int | float | bool | str] = {
     "quiet_mode": False,
     "warmup_games": 600,
     "warmup_epochs": 8,
+    "warmup_heuristic_level": "sentinel",
+    "warmup_heuristic_levels": "hard,apex,sentinel",
 }
 
 
@@ -119,6 +130,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--value-loss-coeff", type=float, default=None)
+    parser.add_argument("--train-recent-fraction", type=float, default=None)
+    parser.add_argument("--train-recent-window-fraction", type=float, default=None)
+    parser.add_argument("--shuffle-train-val-split", action="store_true")
+    parser.add_argument("--no-shuffle-train-val-split", action="store_true")
     parser.add_argument("--save-every", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--checkpoint-dir", default=None)
@@ -150,7 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opp-random", type=float, default=None)
     parser.add_argument(
         "--opp-heuristic-level",
-        choices=["easy", "normal", "hard"],
+        choices=list(HEURISTIC_LEVELS),
         default=None,
     )
     parser.add_argument("--opp-heu-easy", type=float, default=None)
@@ -161,6 +176,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=None)
     parser.add_argument("--eval-games", type=int, default=None)
     parser.add_argument("--eval-sims", type=int, default=None)
+    parser.add_argument("--eval-heuristic-levels", default=None)
+    parser.add_argument("--restore-best-on-regression", action="store_true")
+    parser.add_argument("--no-restore-best-on-regression", action="store_true")
+    parser.add_argument("--eval-regression-delta", type=float, default=None)
+    parser.add_argument("--eval-regression-patience", type=int, default=None)
     parser.add_argument("--selfplay-workers", type=int, default=None)
     parser.add_argument("--selfplay-progress-every-s", type=float, default=None)
     parser.add_argument("--selfplay-episode-timeout-s", type=float, default=None)
@@ -169,8 +189,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-games", type=int, default=None)
     parser.add_argument("--warmup-epochs", type=int, default=None)
     parser.add_argument(
+        "--warmup-heuristic-level",
+        choices=list(HEURISTIC_LEVELS),
+        default=None,
+    )
+    parser.add_argument("--warmup-heuristic-levels", default=None)
+    parser.add_argument(
         "--eval-heuristic-level",
-        choices=["easy", "normal", "hard"],
+        choices=list(HEURISTIC_LEVELS),
         default=None,
     )
     parser.add_argument("--verbose", action="store_true")
@@ -188,6 +214,12 @@ def parse_args() -> argparse.Namespace:
 def apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.persistent_workers and args.no_persistent_workers:
         raise ValueError("Use only one of --persistent-workers or --no-persistent-workers.")
+    if args.shuffle_train_val_split and args.no_shuffle_train_val_split:
+        raise ValueError("Use only one of --shuffle-train-val-split or --no-shuffle-train-val-split.")
+    if args.restore_best_on_regression and args.no_restore_best_on_regression:
+        raise ValueError(
+            "Use only one of --restore-best-on-regression or --no-restore-best-on-regression.",
+        )
     if args.iterations is not None:
         CONFIG["iterations"] = args.iterations
     if args.episodes is not None:
@@ -204,6 +236,14 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["weight_decay"] = args.weight_decay
     if args.value_loss_coeff is not None:
         CONFIG["value_loss_coeff"] = max(0.0, args.value_loss_coeff)
+    if args.train_recent_fraction is not None:
+        CONFIG["train_recent_fraction"] = args.train_recent_fraction
+    if args.train_recent_window_fraction is not None:
+        CONFIG["train_recent_window_fraction"] = args.train_recent_window_fraction
+    if args.shuffle_train_val_split:
+        CONFIG["shuffle_train_val_split"] = True
+    if args.no_shuffle_train_val_split:
+        CONFIG["shuffle_train_val_split"] = False
     if args.save_every is not None:
         CONFIG["save_every"] = args.save_every
     if args.seed is not None:
@@ -270,6 +310,16 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["eval_games"] = max(2, args.eval_games)
     if args.eval_sims is not None:
         CONFIG["eval_sims"] = max(8, args.eval_sims)
+    if args.eval_heuristic_levels is not None:
+        CONFIG["eval_heuristic_levels"] = args.eval_heuristic_levels
+    if args.restore_best_on_regression:
+        CONFIG["restore_best_on_regression"] = True
+    if args.no_restore_best_on_regression:
+        CONFIG["restore_best_on_regression"] = False
+    if args.eval_regression_delta is not None:
+        CONFIG["eval_regression_delta"] = max(0.0, args.eval_regression_delta)
+    if args.eval_regression_patience is not None:
+        CONFIG["eval_regression_patience"] = max(0, args.eval_regression_patience)
     if args.selfplay_workers is not None:
         CONFIG["selfplay_workers"] = max(1, args.selfplay_workers)
     if args.selfplay_progress_every_s is not None:
@@ -284,6 +334,10 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         CONFIG["warmup_games"] = max(0, args.warmup_games)
     if args.warmup_epochs is not None:
         CONFIG["warmup_epochs"] = max(0, args.warmup_epochs)
+    if args.warmup_heuristic_level is not None:
+        CONFIG["warmup_heuristic_level"] = args.warmup_heuristic_level
+    if args.warmup_heuristic_levels is not None:
+        CONFIG["warmup_heuristic_levels"] = args.warmup_heuristic_levels
     if args.eval_heuristic_level is not None:
         CONFIG["eval_heuristic_level"] = args.eval_heuristic_level
     if args.quiet:
@@ -362,6 +416,36 @@ def validate_config() -> None:
         raise ValueError("CONFIG['warmup_games'] must be >= 0.")
     if cfg_int("warmup_epochs") < 0:
         raise ValueError("CONFIG['warmup_epochs'] must be >= 0.")
+    train_recent_fraction = cfg_float("train_recent_fraction")
+    if not 0.0 <= train_recent_fraction <= 1.0:
+        raise ValueError("CONFIG['train_recent_fraction'] must be in [0, 1].")
+    train_recent_window_fraction = cfg_float("train_recent_window_fraction")
+    if not 0.0 <= train_recent_window_fraction <= 1.0:
+        raise ValueError("CONFIG['train_recent_window_fraction'] must be in [0, 1].")
+    if cfg_float("eval_regression_delta") < 0.0:
+        raise ValueError("CONFIG['eval_regression_delta'] must be >= 0.")
+    if cfg_int("eval_regression_patience") < 0:
+        raise ValueError("CONFIG['eval_regression_patience'] must be >= 0.")
+    if not is_supported_heuristic_level(cfg_str("warmup_heuristic_level")):
+        raise ValueError(
+            "CONFIG['warmup_heuristic_level'] must be a supported heuristic level.",
+        )
+    warmup_levels_raw = cfg_str("warmup_heuristic_levels").strip()
+    if warmup_levels_raw != "":
+        for level in [part.strip() for part in warmup_levels_raw.split(",") if part.strip()]:
+            if not is_supported_heuristic_level(level):
+                raise ValueError(
+                    "CONFIG['warmup_heuristic_levels'] contains unsupported level "
+                    f"'{level}'.",
+                )
+    eval_levels_raw = cfg_str("eval_heuristic_levels").strip()
+    if eval_levels_raw != "":
+        for level in [part.strip() for part in eval_levels_raw.split(",") if part.strip()]:
+            if not is_supported_heuristic_level(level):
+                raise ValueError(
+                    "CONFIG['eval_heuristic_levels'] contains unsupported level "
+                    f"'{level}'.",
+                )
     if cfg_float("value_loss_coeff") < 0.0:
         raise ValueError("CONFIG['value_loss_coeff'] must be >= 0.")
     if cfg_int("mcts_cache_size") < 0:
@@ -412,6 +496,4 @@ def validate_config() -> None:
 
 def resolve_trainer_precision(accelerator: str) -> TrainerPrecision:
     configured = cast(TrainerPrecision, cfg_str("trainer_precision"))
-    if accelerator == "gpu":
-        return configured
-    return cast(TrainerPrecision, "32-true")
+    return configured if accelerator == "gpu" else cast(TrainerPrecision, "32-true")

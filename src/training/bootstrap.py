@@ -4,12 +4,12 @@ from typing import Literal
 
 import numpy as np
 
-from agents.heuristic import heuristic_move
+from agents.heuristic import heuristic_move, is_supported_heuristic_level
 from data.replay_buffer import TrainingExample
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
 
-HeuristicLevel = Literal["easy", "normal", "hard"]
+HeuristicLevel = Literal["easy", "normal", "hard", "apex", "gambit", "sentinel"]
 HistoryEntry = tuple[np.ndarray, np.ndarray, int]
 
 
@@ -51,6 +51,8 @@ def generate_imitation_data(
     """
     if n_games <= 0:
         return []
+    if not is_supported_heuristic_level(heuristic_level):
+        raise ValueError(f"Unsupported heuristic level for warmup: {heuristic_level}")
 
     rng = np.random.default_rng(seed=seed)
     all_examples: list[TrainingExample] = []

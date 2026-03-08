@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import heapq
 import multiprocessing as mp
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -9,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
+from agents.heuristic import HEURISTIC_LEVELS, heuristic_move
 from game.actions import ACTION_SPACE
 from training.config_runtime import (
     cfg_bool,
@@ -59,47 +59,6 @@ def select_action_idx(
     if temperature > 0.0:
         return int(rng.choice(len(probs), p=probs))
     return int(np.argmax(probs))
-
-
-def score_move_for_player(board: AtaxxBoard, move: tuple[int, int, int, int]) -> float:
-    r1, c1, r2, c2 = move
-    board_size = int(board.grid.shape[0])
-    jump = 1 if max(abs(r2 - r1), abs(c2 - c1)) == 2 else 0
-    r_min = max(0, r2 - 1)
-    r_max = min(board_size, r2 + 2)
-    c_min = max(0, c2 - 1)
-    c_max = min(board_size, c2 + 2)
-    neighborhood = board.grid[r_min:r_max, c_min:c_max]
-    converted = float(np.sum(neighborhood == -board.current_player))
-    center = float(board_size - 1) / 2.0
-    center_bonus = 0.35 * ((board_size - 1) - abs(r2 - center) - abs(c2 - center))
-    return converted + center_bonus - 0.55 * float(jump)
-
-
-def heuristic_move(
-    board: AtaxxBoard,
-    rng: np.random.Generator,
-    level: str,
-) -> tuple[int, int, int, int] | None:
-    moves = board.get_valid_moves()
-    if len(moves) == 0:
-        return None
-    if level == "easy":
-        return moves[int(rng.integers(0, len(moves)))]
-
-    if level == "hard":
-        top_k = max(1, min(3, len(moves)))
-    else:
-        top_k = max(1, min(5, len(moves)))
-    scored = heapq.nlargest(
-        top_k,
-        ((move, score_move_for_player(board, move)) for move in moves),
-        key=lambda item: item[1],
-    )
-    weights = np.linspace(1.0, 0.35, top_k, dtype=np.float64)
-    weights = weights / np.sum(weights)
-    pick = int(rng.choice(top_k, p=weights))
-    return scored[pick][0]
 
 
 def random_move(
@@ -291,7 +250,11 @@ def execute_self_play(
     log(f"[Iteration {iteration}] self-play start episodes={episodes} sims={cfg_int('mcts_sims')} workers={selfplay_workers}")
     curriculum_mix = get_curriculum_mix(iteration)
     log(f"  Opponent mix: self={curriculum_mix['self']:.2f}, heuristic={curriculum_mix['heuristic']:.2f}, random={curriculum_mix['random']:.2f}", verbose_only=True)
-    log(f"  Heuristic levels: easy={curriculum_mix['heu_easy']:.2f}, normal={curriculum_mix['heu_normal']:.2f}, hard={curriculum_mix['heu_hard']:.2f}", verbose_only=True)
+    heuristic_mix = " ".join(
+        f"{level}={curriculum_mix[f'heu_{level}']:.2f}"
+        for level in HEURISTIC_LEVELS
+    )
+    log(f"  Heuristic levels: {heuristic_mix}", verbose_only=True)
 
     stats: dict[str, float | int] = {
         "wins_p1": 0,
@@ -302,10 +265,9 @@ def execute_self_play(
         "episodes_vs_self": 0,
         "episodes_vs_heuristic": 0,
         "episodes_vs_random": 0,
-        "episodes_vs_heuristic_easy": 0,
-        "episodes_vs_heuristic_normal": 0,
-        "episodes_vs_heuristic_hard": 0,
     }
+    for heuristic_level in HEURISTIC_LEVELS:
+        stats[f"episodes_vs_heuristic_{heuristic_level}"] = 0
 
     episode_specs: list[tuple[int, str, str, int]] = []
     for episode_idx in range(episodes):

@@ -56,7 +56,8 @@ Main entrypoint is now:
 uv run python train.py
 ```
 
-`train_improved.py` is kept as compatibility wrapper.
+`train_improved.py` is kept as notebook compatibility wrapper and re-exports
+`CONFIG`, `parse_args`, `apply_cli_overrides`, `validate_config`, and `main`.
 
 ## Entrenamiento remoto (RunPod + Pulumi)
 
@@ -204,7 +205,7 @@ uv run python train.py --no-onnx --quiet --keep-local-ckpts 2 --keep-log-version
 Kaggle 2x T4 (use both GPUs):
 
 ```bash
-uv run python train.py --no-onnx --quiet --devices 2 --strategy ddp --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3
+uv run python train.py --no-onnx --quiet --devices 2 --strategy ddp_spawn --precision 16-mixed --num-workers 2 --persistent-workers --keep-local-ckpts 256 --keep-log-versions 2 --hf --hf-repo-id your_user/ataxx-zero --hf-run-id policy_spatial_v3 --hf-bootstrap-run-id policy_spatial_v2 --hf-reset-iteration --iterations 220 --episodes 20 --sims 160 --epochs 2 --batch-size 224 --lr 3e-4 --weight-decay 1e-4 --save-every 1 --warmup-games 240 --warmup-epochs 3 --warmup-heuristic-levels hard,apex,sentinel --eval-every 6 --eval-games 12 --eval-sims 160 --eval-heuristic-levels hard,apex,sentinel --restore-best-on-regression --eval-regression-delta 0.03 --eval-regression-patience 2 --allow-selfplay-fallback --max-pending-hf-uploads 6 --hf-upload-timeout-s 900
 ```
 
 Kaggle estable con `opponent pool` (recomendado):
@@ -216,8 +217,11 @@ uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --keep-loca
 Kaggle estable + evaluacion automatica + best checkpoint:
 
 ```bash
-uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --num-workers 3 --persistent-workers --keep-local-ckpts 2 --keep-log-versions 1 --hf --hf-repo-id your_user/ataxx-zero --iterations 40 --episodes 70 --sims 420 --epochs 5 --batch-size 96 --lr 9e-4 --weight-decay 1e-4 --save-every 3 --strict-probs --eval-every 3 --eval-games 12 --eval-sims 220 --eval-heuristic-level hard --opp-self 0.85 --opp-heuristic 0.12 --opp-random 0.03 --opp-heu-easy 0.05 --opp-heu-normal 0.20 --opp-heu-hard 0.75 --model-swap-prob 0.5
+uv run python train.py --no-onnx --quiet --devices 1 --strategy auto --num-workers 2 --persistent-workers --keep-local-ckpts 256 --keep-log-versions 2 --hf --hf-repo-id your_user/ataxx-zero --hf-run-id policy_spatial_v3 --hf-bootstrap-run-id policy_spatial_v2 --hf-reset-iteration --iterations 160 --episodes 16 --sims 128 --epochs 2 --batch-size 192 --lr 3e-4 --weight-decay 1e-4 --save-every 1 --warmup-games 180 --warmup-epochs 2 --warmup-heuristic-levels hard,apex,sentinel --eval-every 6 --eval-games 12 --eval-sims 128 --eval-heuristic-levels hard,apex,sentinel --restore-best-on-regression --eval-regression-delta 0.03 --eval-regression-patience 2 --allow-selfplay-fallback --max-pending-hf-uploads 6 --hf-upload-timeout-s 900
 ```
+
+Si Kaggle te asigna una `P100`, el trainer cae automaticamente a CPU para evitar el
+crash de compatibilidad `sm_60`; para mixed precision y DDP real necesitas `T4 x2`.
 
 If your environment is missing ONNX tooling, use:
 

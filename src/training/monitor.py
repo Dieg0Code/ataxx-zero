@@ -4,6 +4,8 @@ from collections.abc import Mapping
 
 import torch
 
+from agents.heuristic import HEURISTIC_LEVELS
+
 
 def _to_float(value: object) -> float:
     if isinstance(value, torch.Tensor):
@@ -89,10 +91,15 @@ class TrainingMonitor:
         ep_rnd = int(selfplay_stats.get("episodes_vs_random", 0))
         total_ep = max(1, ep_self + ep_heu + ep_rnd)
 
-        ep_easy = int(selfplay_stats.get("episodes_vs_heuristic_easy", 0))
-        ep_normal = int(selfplay_stats.get("episodes_vs_heuristic_normal", 0))
-        ep_hard = int(selfplay_stats.get("episodes_vs_heuristic_hard", 0))
-        total_heu = max(1, ep_easy + ep_normal + ep_hard)
+        heuristic_counts = {
+            level: int(selfplay_stats.get(f"episodes_vs_heuristic_{level}", 0))
+            for level in HEURISTIC_LEVELS
+        }
+        total_heu = max(1, sum(heuristic_counts.values()))
+        heuristic_mix = " ".join(
+            f"{level}:{heuristic_counts[level]/total_heu:.0%}"
+            for level in HEURISTIC_LEVELS
+        )
 
         pol_acc = _to_float(logged_metrics.get("train/policy_accuracy"))
         val_loss = _to_float(logged_metrics.get("val/loss"))
@@ -103,7 +110,7 @@ class TrainingMonitor:
         )
         print(
             "         "
-            f"heuristic easy:{ep_easy/total_heu:.0%} normal:{ep_normal/total_heu:.0%} hard:{ep_hard/total_heu:.0%} "
+            f"heuristic {heuristic_mix} "
             f"pol_acc={pol_acc:.1%} val_loss={val_loss:.3f}",
         )
 
@@ -149,6 +156,42 @@ class TrainingMonitor:
             f"{self._prefix(iteration)} EVAL "
             f"W={wins} L={losses} D={draws} "
             f"score={score:.3f} vs {level} (sims={sims}){suffix}",
+        )
+        return is_best
+
+    def log_eval_snapshot(self, *, iteration: int, eval_stats: Mapping[str, float | int | str]) -> None:
+        score = float(eval_stats.get("score", 0.0))
+        wins = int(eval_stats.get("wins", 0))
+        losses = int(eval_stats.get("losses", 0))
+        draws = int(eval_stats.get("draws", 0))
+        level = str(eval_stats.get("heuristic_level", "unknown"))
+        sims = int(eval_stats.get("sims", 0))
+        print(
+            f"{self._prefix(iteration)} EVAL "
+            f"W={wins} L={losses} D={draws} "
+            f"score={score:.3f} vs {level} (sims={sims})",
+        )
+
+    def log_eval_composite(
+        self,
+        *,
+        iteration: int,
+        level_scores: Mapping[str, float],
+    ) -> bool:
+        if len(level_scores) == 0:
+            return False
+        composite_score = float(sum(level_scores.values()) / len(level_scores))
+        is_best = composite_score > self.best_eval_score
+        if is_best:
+            self.best_eval_score = composite_score
+        levels_txt = " ".join(
+            f"{level}:{score:.3f}"
+            for level, score in level_scores.items()
+        )
+        suffix = " *** BEST ***" if is_best else ""
+        print(
+            f"{self._prefix(iteration)} EVAL_COMPOSITE score={composite_score:.3f} "
+            f"[{levels_txt}]{suffix}",
         )
         return is_best
 

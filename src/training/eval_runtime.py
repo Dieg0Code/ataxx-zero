@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from agents.heuristic import heuristic_move
 from game.actions import ACTION_SPACE
 from training.config_runtime import cfg_bool, cfg_int
-from training.selfplay_runtime import compute_action_probs, heuristic_move
+from training.selfplay_runtime import compute_action_probs
 
 if TYPE_CHECKING:
     from engine.mcts import MCTS

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -13,6 +14,9 @@ from game.types import Move
 
 _N_TRANSFORMS = 8
 _POLICY_INDEX_MAPS: np.ndarray | None = None
+
+if TYPE_CHECKING:
+    from data.replay_buffer import TrainingExample
 
 
 def _rotate_coord_ccw(r: int, c: int, k: int, size: int) -> tuple[int, int]:
@@ -98,25 +102,65 @@ def _augment_policy(policy: np.ndarray, transform_id: int) -> np.ndarray:
     return pi_aug
 
 
+def split_train_val_examples(
+    *,
+    all_examples: list[TrainingExample],
+    val_split: float,
+    shuffle: bool,
+    seed: int,
+) -> tuple[list[TrainingExample], list[TrainingExample]]:
+    """Split examples into disjoint train/val sets with optional seeded shuffling."""
+    n_total = len(all_examples)
+    if n_total == 0:
+        return [], []
+    n_val = int(n_total * val_split)
+    n_val = min(max(0, n_val), n_total)
+    n_train = n_total - n_val
+    if n_val == 0:
+        return list(all_examples), []
+    if not shuffle:
+        return list(all_examples[:n_train]), list(all_examples[n_train:])
+
+    rng = np.random.default_rng(seed=seed)
+    val_indices = np.sort(rng.choice(n_total, size=n_val, replace=False))
+    val_set = {int(i) for i in val_indices.tolist()}
+    # Keep train set in chronological order so "recent" remains meaningful.
+    train_indices = [idx for idx in range(n_total) if idx not in val_set]
+    train_examples = [all_examples[idx] for idx in train_indices]
+    val_examples = [all_examples[int(idx)] for idx in val_indices]
+    return train_examples, val_examples
+
+
 class AtaxxDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
     """Dataset wrapper from replay buffer examples."""
 
     def __init__(
         self,
-        buffer: ReplayBuffer,
+        buffer: ReplayBuffer | None = None,
         augment: bool = True,
         reference_buffer: bool = False,
         val_split: float = 0.1,
+        examples: list[TrainingExample] | None = None,
     ) -> None:
         self.augment = augment
         self.examples: list[tuple[np.ndarray, np.ndarray, float]] | deque[
             tuple[np.ndarray, np.ndarray, float]
         ]
+        if examples is not None:
+            self.examples = list(examples)
+            return
+        if buffer is None:
+            self.examples = []
+            return
+
         raw_examples = list(buffer.buffer) if reference_buffer else buffer.get_all()
-        n_val = int(len(raw_examples) * val_split)
-        n_train = len(raw_examples) - n_val
-        # Keep train/validation disjoint so val loss is a true hold-out metric.
-        self.examples = raw_examples[:n_train]
+        train_examples, _ = split_train_val_examples(
+            all_examples=raw_examples,
+            val_split=val_split,
+            shuffle=False,
+            seed=0,
+        )
+        self.examples = train_examples
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -140,11 +184,26 @@ class AtaxxDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
 class ValidationDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
     """Hold-out validation split from replay buffer."""
 
-    def __init__(self, buffer: ReplayBuffer, split: float = 0.1) -> None:
+    def __init__(
+        self,
+        buffer: ReplayBuffer | None = None,
+        split: float = 0.1,
+        examples: list[TrainingExample] | None = None,
+    ) -> None:
+        if examples is not None:
+            self.examples = list(examples)
+            return
+        if buffer is None:
+            self.examples = []
+            return
         all_examples = buffer.get_all()
-        n_val = int(len(all_examples) * split)
-        n_train = len(all_examples) - n_val
-        self.examples = all_examples[n_train:] if n_val > 0 else []
+        _, val_examples = split_train_val_examples(
+            all_examples=all_examples,
+            val_split=split,
+            shuffle=False,
+            seed=0,
+        )
+        self.examples = val_examples
 
     def __len__(self) -> int:
         return len(self.examples)

@@ -4,22 +4,15 @@ import sys
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
-import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
-from torch.utils.data import DataLoader
 
 root = Path(__file__).resolve().parent
 src = root / "src"
 if str(src) not in sys.path:
     sys.path.insert(0, str(src))
-if TYPE_CHECKING:
-    from data.replay_buffer import ReplayBuffer
-    from model.system import AtaxxZero
-from training.bootstrap import generate_imitation_data  # noqa: E402
 from training.callbacks import OptimizerStateTransfer  # noqa: E402
 from training.checkpointing import (  # noqa: E402
     cleanup_local_checkpoints,
@@ -33,7 +26,6 @@ from training.checkpointing import (  # noqa: E402
 )
 from training.config_runtime import (  # noqa: E402
     CONFIG,
-    TrainerPrecision,
     apply_cli_overrides,
     cfg_bool,
     cfg_float,
@@ -44,202 +36,26 @@ from training.config_runtime import (  # noqa: E402
     parse_args,
     validate_config,
 )
+from training.eval_gating import compute_regression_gate  # noqa: E402
 from training.eval_runtime import evaluate_model  # noqa: E402
+from training.logging_runtime import build_training_logger  # noqa: E402
+from training.loop_runtime import (  # noqa: E402
+    build_train_loader,
+    build_val_loader,
+    fit_with_ddp_fallback,
+    prepare_train_val_examples,
+    resolve_eval_levels,
+    restore_system_from_checkpoint,
+    run_warmup_if_needed,
+)
 from training.monitor import TrainingMonitor  # noqa: E402
 from training.progress_callbacks import EpochPulseCallback  # noqa: E402
 from training.selfplay_runtime import execute_self_play  # noqa: E402
 from training.trainer_runtime import (  # noqa: E402
-    build_trainer,
     export_onnx,
-    is_ddp_rendezvous_timeout,
     resolve_trainer_hw,
     resolve_trainer_precision,
 )
-
-
-def _build_train_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object]:
-    from data.dataset import AtaxxDataset
-
-    dataset = AtaxxDataset(
-        buffer=buffer,
-        augment=True,
-        reference_buffer=False,
-        val_split=cfg_float("val_split"),
-    )
-    if cfg_int("num_workers") > 0:
-        return DataLoader(
-            dataset,
-            batch_size=cfg_int("batch_size"),
-            shuffle=True,
-            num_workers=cfg_int("num_workers"),
-            persistent_workers=cfg_bool("persistent_workers"),
-            pin_memory=(device == "cuda"),
-            prefetch_factor=2,
-        )
-    return DataLoader(
-        dataset,
-        batch_size=cfg_int("batch_size"),
-        shuffle=True,
-        num_workers=0,
-        persistent_workers=False,
-        pin_memory=(device == "cuda"),
-    )
-
-
-def _build_val_loader(buffer: ReplayBuffer, device: str) -> DataLoader[object] | None:
-    from data.dataset import ValidationDataset
-
-    val_dataset = ValidationDataset(buffer=buffer, split=cfg_float("val_split"))
-    if len(val_dataset) == 0:
-        return None
-    if cfg_int("num_workers") > 0:
-        return DataLoader(
-            val_dataset,
-            batch_size=cfg_int("batch_size"),
-            shuffle=False,
-            num_workers=cfg_int("num_workers"),
-            persistent_workers=cfg_bool("persistent_workers"),
-            pin_memory=(device == "cuda"),
-            prefetch_factor=2,
-        )
-    return DataLoader(
-        val_dataset,
-        batch_size=cfg_int("batch_size"),
-        shuffle=False,
-        num_workers=0,
-        persistent_workers=False,
-        pin_memory=(device == "cuda"),
-    )
-
-
-def _fit_with_ddp_fallback(
-    *,
-    system: AtaxxZero,
-    train_loader: DataLoader[object],
-    val_loader: DataLoader[object] | None,
-    epochs: int,
-    trainer_accelerator: str,
-    trainer_devices: int,
-    trainer_strategy: str,
-    trainer_precision: TrainerPrecision,
-    checkpoint_callback: ModelCheckpoint,
-    lr_monitor: LearningRateMonitor,
-    logger: TensorBoardLogger,
-    optimizer_transfer: OptimizerStateTransfer,
-    epoch_pulse: EpochPulseCallback,
-) -> tuple[pl.Trainer, str, int, str, TrainerPrecision]:
-    trainer = build_trainer(
-        epochs=epochs,
-        accelerator=trainer_accelerator,
-        devices=trainer_devices,
-        strategy=trainer_strategy,
-        precision=trainer_precision,
-        benchmark=cfg_bool("trainer_benchmark"),
-        checkpoint_callback=checkpoint_callback,
-        lr_monitor=lr_monitor,
-        logger=logger,
-        extra_callbacks=[optimizer_transfer, epoch_pulse],
-    )
-    system.train()
-    try:
-        trainer.fit(
-            model=system,
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-        )
-    except Exception as exc:
-        # DDP startup failures are environmental; we degrade to single-device
-        # so long runs are not lost due to rendezvous flakiness.
-        if trainer_devices <= 1 or not is_ddp_rendezvous_timeout(exc):
-            raise
-        log("DDP rendezvous failed. Falling back to single-GPU for this run.")
-        trainer_accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-        trainer_devices = 1
-        trainer_strategy = "auto"
-        trainer_precision = resolve_trainer_precision(trainer_accelerator)
-        trainer = build_trainer(
-            epochs=epochs,
-            accelerator=trainer_accelerator,
-            devices=trainer_devices,
-            strategy=trainer_strategy,
-            precision=trainer_precision,
-            benchmark=cfg_bool("trainer_benchmark"),
-            checkpoint_callback=checkpoint_callback,
-            lr_monitor=lr_monitor,
-            logger=logger,
-            extra_callbacks=[optimizer_transfer, epoch_pulse],
-        )
-        system.train()
-        trainer.fit(
-            model=system,
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-        )
-    return (
-        trainer,
-        trainer_accelerator,
-        trainer_devices,
-        trainer_strategy,
-        trainer_precision,
-    )
-
-
-def _run_warmup_if_needed(
-    *,
-    start_iteration: int,
-    system: AtaxxZero,
-    buffer: ReplayBuffer,
-    trainer_accelerator: str,
-    trainer_devices: int,
-    trainer_strategy: str,
-    trainer_precision: TrainerPrecision,
-    checkpoint_callback: ModelCheckpoint,
-    lr_monitor: LearningRateMonitor,
-    logger: TensorBoardLogger,
-    device: str,
-    optimizer_transfer: OptimizerStateTransfer,
-    monitor: TrainingMonitor,
-    epoch_pulse: EpochPulseCallback,
-) -> tuple[str, int, str, TrainerPrecision]:
-    warmup_games = cfg_int("warmup_games")
-    warmup_epochs = cfg_int("warmup_epochs")
-    if start_iteration != 0 or warmup_games <= 0 or warmup_epochs <= 0:
-        return trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision
-
-    # Warmup seeds the policy with legal, sensible moves before self-play noise.
-    warmup_rng = torch.Generator().manual_seed(cfg_int("seed"))
-    rng_seed = int(torch.randint(0, 2**31, (1,), generator=warmup_rng).item())
-    warmup_examples = generate_imitation_data(
-        n_games=warmup_games,
-        seed=rng_seed,
-        heuristic_level="hard",
-    )
-    buffer.save_game(warmup_examples)
-    monitor.log_warmup(examples=len(warmup_examples), games=warmup_games)
-    train_loader = _build_train_loader(buffer, device=device)
-    val_loader = _build_val_loader(buffer, device=device)
-    (
-        _warmup_trainer,
-        trainer_accelerator,
-        trainer_devices,
-        trainer_strategy,
-        trainer_precision,
-    ) = _fit_with_ddp_fallback(
-        system=system,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        epochs=warmup_epochs,
-        trainer_accelerator=trainer_accelerator,
-        trainer_devices=trainer_devices,
-        trainer_strategy=trainer_strategy,
-        trainer_precision=trainer_precision,
-        checkpoint_callback=checkpoint_callback,
-        lr_monitor=lr_monitor,
-        logger=logger,
-        optimizer_transfer=optimizer_transfer,
-        epoch_pulse=epoch_pulse,
-    )
-    return trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision
 
 
 def main() -> None:
@@ -318,8 +134,10 @@ def main() -> None:
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
-    logger = TensorBoardLogger(save_dir=str(log_dir), name="ataxx_zero")
+    logger = build_training_logger(log_dir)
     best_eval_score = -1.0
+    best_path = checkpoint_dir / "best_eval.ckpt"
+    eval_regression_streak = 0
     optimizer_transfer = OptimizerStateTransfer()
     monitor = TrainingMonitor(
         total_iterations=iterations,
@@ -330,7 +148,7 @@ def main() -> None:
         pulse_every=cfg_int("epoch_pulse_every"),
     )
 
-    trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision = _run_warmup_if_needed(
+    trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision = run_warmup_if_needed(
         start_iteration=start_iteration,
         system=system,
         buffer=buffer,
@@ -365,12 +183,16 @@ def main() -> None:
             if len(buffer) == 0:
                 raise RuntimeError("Replay buffer is empty after self-play; aborting early.")
 
-            train_loader = _build_train_loader(buffer, device=device)
-            val_loader = _build_val_loader(buffer, device=device)
+            train_examples, val_examples = prepare_train_val_examples(
+                buffer=buffer,
+                split_seed=cfg_int("seed") + iteration,
+            )
+            train_loader = build_train_loader(train_examples, device=device)
+            val_loader = build_val_loader(val_examples, device=device)
 
             fit_start = time.perf_counter()
             trainer, trainer_accelerator, trainer_devices, trainer_strategy, trainer_precision = (
-                _fit_with_ddp_fallback(
+                fit_with_ddp_fallback(
                     system=system,
                     train_loader=train_loader,
                     val_loader=val_loader,
@@ -399,21 +221,74 @@ def main() -> None:
             eval_stats: dict[str, float | int | str] | None = None
             if cfg_bool("eval_enabled") and iteration % cfg_int("eval_every") == 0:
                 try:
-                    current_eval = evaluate_model(
-                        system=system,
-                        device=device,
-                        games=cfg_int("eval_games"),
-                        sims=cfg_int("eval_sims"),
-                        c_puct=cfg_float("c_puct"),
-                        heuristic_level=cfg_str("eval_heuristic_level"),
-                        seed=cfg_int("seed") + 10_000 + iteration,
+                    eval_levels = resolve_eval_levels()
+                    level_scores: dict[str, float] = {}
+                    eval_score_wins = 0
+                    eval_score_losses = 0
+                    eval_score_draws = 0
+                    for level_idx, heuristic_level in enumerate(eval_levels):
+                        current_eval = evaluate_model(
+                            system=system,
+                            device=device,
+                            games=cfg_int("eval_games"),
+                            sims=cfg_int("eval_sims"),
+                            c_puct=cfg_float("c_puct"),
+                            heuristic_level=heuristic_level,
+                            seed=cfg_int("seed") + 10_000 + iteration + (level_idx * 997),
+                        )
+                        monitor.log_eval_snapshot(iteration=iteration, eval_stats=current_eval)
+                        level_scores[heuristic_level] = float(current_eval["score"])
+                        eval_score_wins += int(current_eval["wins"])
+                        eval_score_losses += int(current_eval["losses"])
+                        eval_score_draws += int(current_eval["draws"])
+
+                    is_best = monitor.log_eval_composite(
+                        iteration=iteration,
+                        level_scores=level_scores,
                     )
-                    eval_stats = current_eval
-                    is_best = monitor.log_eval(iteration=iteration, eval_stats=current_eval)
+                    eval_stats = {
+                        "score": float(sum(level_scores.values()) / max(1, len(level_scores))),
+                        "eval_total_wins": eval_score_wins,
+                        "eval_total_losses": eval_score_losses,
+                        "eval_total_draws": eval_score_draws,
+                        "eval_levels": ",".join(level_scores.keys()),
+                        **{
+                            f"eval_score_{level}": score
+                            for level, score in level_scores.items()
+                        },
+                    }
                     if is_best:
-                        best_eval_score = float(current_eval["score"])
-                        best_path = checkpoint_dir / "best_eval.ckpt"
+                        best_eval_score = float(eval_stats["score"])
                         trainer.save_checkpoint(str(best_path))
+                        eval_regression_streak = 0
+                    else:
+                        eval_regression_streak, should_restore = compute_regression_gate(
+                            current_score=float(eval_stats["score"]),
+                            best_score=best_eval_score,
+                            regression_delta=cfg_float("eval_regression_delta"),
+                            current_streak=eval_regression_streak,
+                            patience=cfg_int("eval_regression_patience"),
+                        )
+                        if (
+                            cfg_bool("restore_best_on_regression")
+                            and should_restore
+                            and best_path.exists()
+                        ):
+                            try:
+                                restore_system_from_checkpoint(system, str(best_path))
+                                eval_regression_streak = 0
+                                monitor.log_warning(
+                                    iteration=iteration,
+                                    message=(
+                                        "eval regression detected; restored model weights from "
+                                        f"{best_path.name}"
+                                    ),
+                                )
+                            except Exception as restore_exc:
+                                monitor.log_warning(
+                                    iteration=iteration,
+                                    message=f"failed to restore best checkpoint: {restore_exc}",
+                                )
                 except Exception as exc:
                     monitor.log_warning(iteration=iteration, message=f"eval failed, continuing training: {exc}")
 
@@ -496,5 +371,7 @@ def main() -> None:
                     raise
                 log(f"HF upload wait failed: {exc}")
             hf_upload_executor.shutdown(wait=False, cancel_futures=True)
+
+
 if __name__ == "__main__":
     main()

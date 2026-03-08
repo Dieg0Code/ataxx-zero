@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import Logger
 from pytorch_lightning.strategies import DDPStrategy
 
 from training.config_runtime import (
@@ -81,7 +81,7 @@ def build_trainer(
     benchmark: bool,
     checkpoint_callback: ModelCheckpoint,
     lr_monitor: LearningRateMonitor,
-    logger: TensorBoardLogger,
+    logger: Logger,
     extra_callbacks: list[Callback] | None = None,
 ) -> pl.Trainer:
     callbacks: list[Callback] = [checkpoint_callback, lr_monitor]

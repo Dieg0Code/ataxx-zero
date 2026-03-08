@@ -11,6 +11,47 @@ PolicyTarget = npt.NDArray[np.float32]
 TrainingExample = tuple[Observation, PolicyTarget, float]
 
 
+def sample_recent_mix(
+    examples: list[TrainingExample],
+    *,
+    recent_fraction: float,
+    recent_window_fraction: float,
+    seed: int | None = None,
+    sample_size: int | None = None,
+) -> list[TrainingExample]:
+    """
+    Build a training set biased toward recent samples while keeping global coverage.
+
+    The default behavior keeps dataset size unchanged and mixes:
+    - `recent_fraction` from the most recent `recent_window_fraction` of samples,
+    - the rest from the full training pool.
+    """
+    if len(examples) == 0:
+        return []
+
+    total = len(examples)
+    sample_n = total if sample_size is None else max(1, min(int(sample_size), total))
+
+    recent_window_size = max(1, round(total * recent_window_fraction))
+    recent_window = examples[-recent_window_size:]
+    recent_n = round(sample_n * recent_fraction)
+    recent_n = min(sample_n, max(0, recent_n))
+    global_n = sample_n - recent_n
+
+    rng = np.random.default_rng(seed=seed)
+    picked: list[TrainingExample] = []
+    if recent_n > 0:
+        recent_idx = rng.integers(0, len(recent_window), size=recent_n, endpoint=False)
+        picked.extend(recent_window[int(i)] for i in recent_idx)
+    if global_n > 0:
+        global_idx = rng.integers(0, total, size=global_n, endpoint=False)
+        picked.extend(examples[int(i)] for i in global_idx)
+    if len(picked) > 1:
+        order = rng.permutation(len(picked))
+        picked = [picked[int(i)] for i in order]
+    return picked
+
+
 class ReplayBuffer:
     """FIFO replay buffer for self-play training examples."""
 

@@ -30,6 +30,8 @@ async def _ensure_model_bot(args: argparse.Namespace) -> None:
     from api.db.enums import AgentType, BotKind
     from api.db.models import BotProfile, ModelVersion, User
     from api.db.session import get_engine, get_sessionmaker
+    from api.modules.model_versions.repository import ModelVersionRepository
+    from api.modules.model_versions.service import ModelVersionService
     from api.modules.ranking.repository import RankingRepository
     from api.modules.ranking.service import RankingService
 
@@ -64,18 +66,12 @@ async def _ensure_model_bot(args: argparse.Namespace) -> None:
             await session.refresh(version)
 
         if args.activate_version:
-            await session.execute(
-                # Keep one global active version when requested explicitly.
-                ModelVersion.__table__.update()
-                .where(col(ModelVersion.id) != version.id)
-                .values(is_active=False)
+            # Reuse the repository/service flow so activation semantics stay
+            # consistent with the API and type-check cleanly.
+            version_service = ModelVersionService(
+                repository=ModelVersionRepository(session=session)
             )
-            await session.execute(
-                ModelVersion.__table__.update()
-                .where(col(ModelVersion.id) == version.id)
-                .values(is_active=True)
-            )
-            await session.commit()
+            version = await version_service.activate_model_version(version.id)
 
         user_stmt = select(User).where(col(User.username) == args.username)
         user = (await session.execute(user_stmt)).scalars().first()

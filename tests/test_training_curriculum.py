@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from agents.heuristic import HEURISTIC_LEVELS
 from training.curriculum import get_curriculum_mix, sample_opponent_from_curriculum
 
 
@@ -13,7 +14,12 @@ class TestTrainingCurriculum(unittest.TestCase):
             mix = get_curriculum_mix(iteration)
             self.assertAlmostEqual(mix["self"] + mix["heuristic"] + mix["random"], 1.0, places=6)
             self.assertAlmostEqual(
-                mix["heu_easy"] + mix["heu_normal"] + mix["heu_hard"],
+                mix["heu_easy"]
+                + mix["heu_normal"]
+                + mix["heu_hard"]
+                + mix["heu_apex"]
+                + mix["heu_gambit"]
+                + mix["heu_sentinel"],
                 1.0,
                 places=6,
             )
@@ -30,7 +36,7 @@ class TestTrainingCurriculum(unittest.TestCase):
         for iteration in (1, 10, 30):
             opp, lvl = sample_opponent_from_curriculum(rng=rng, iteration=iteration)
             self.assertIn(opp, ("self", "heuristic", "random"))
-            self.assertIn(lvl, ("easy", "normal", "hard"))
+            self.assertIn(lvl, HEURISTIC_LEVELS)
 
 
 if __name__ == "__main__":
