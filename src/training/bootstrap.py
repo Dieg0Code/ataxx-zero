@@ -8,32 +8,21 @@ from agents.heuristic import heuristic_move, is_supported_heuristic_level
 from data.replay_buffer import TrainingExample
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
+from training.config_runtime import cfg_bool
+from training.reward_runtime import (
+    HistoryEntry,
+    compute_state_potential,
+    compute_transition_shaping_reward,
+    history_to_examples,
+)
 
 HeuristicLevel = Literal["easy", "normal", "hard", "apex", "gambit", "sentinel"]
-HistoryEntry = tuple[np.ndarray, np.ndarray, int]
 
 
 def _one_hot_policy(action_idx: int) -> np.ndarray:
     policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
     policy[action_idx] = 1.0
     return policy
-
-
-def history_to_examples(
-    game_history: list[HistoryEntry],
-    winner: int,
-) -> list[TrainingExample]:
-    """Convert per-turn history into value targets from the acting player's perspective."""
-    examples: list[TrainingExample] = []
-    for observation, policy, player_at_turn in game_history:
-        if winner == 0:
-            z = 0.0
-        elif winner == player_at_turn:
-            z = 1.0
-        else:
-            z = -1.0
-        examples.append((observation, policy, z))
-    return examples
 
 
 def generate_imitation_data(
@@ -60,16 +49,34 @@ def generate_imitation_data(
     for _ in range(n_games):
         board = AtaxxBoard()
         game_history: list[HistoryEntry] = []
+        shaping_enabled = cfg_bool("reward_shaping_enabled")
 
         while not board.is_game_over():
             player_at_turn = int(board.current_player)
+            observation = board.get_observation()
             move = heuristic_move(board=board, rng=rng, level=heuristic_level)
             action_idx = ACTION_SPACE.encode(move)
             policy = _one_hot_policy(action_idx)
-            game_history.append((board.get_observation(), policy, player_at_turn))
+            shaping_reward = 0.0
+            before_potential = 0.0
+            if shaping_enabled:
+                before_potential = compute_state_potential(board, player_at_turn)
             board.step(move)
+            if shaping_enabled:
+                after_potential = compute_state_potential(board, player_at_turn)
+                shaping_reward = compute_transition_shaping_reward(
+                    before_potential=before_potential,
+                    after_potential=after_potential,
+                )
+            game_history.append((observation, policy, player_at_turn, shaping_reward))
 
         winner = board.get_result()
-        all_examples.extend(history_to_examples(game_history=game_history, winner=winner))
+        all_examples.extend(
+            history_to_examples(
+                game_history=game_history,
+                winner=winner,
+                forced_draw=board.is_forced_draw(),
+            ),
+        )
 
     return all_examples

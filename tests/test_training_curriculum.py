@@ -26,10 +26,25 @@ class TestTrainingCurriculum(unittest.TestCase):
 
     def test_curriculum_progressively_increases_self_play(self) -> None:
         early = get_curriculum_mix(1)["self"]
-        mid = get_curriculum_mix(10)["self"]
-        late = get_curriculum_mix(30)["self"]
+        mid = get_curriculum_mix(20)["self"]
+        late = get_curriculum_mix(70)["self"]
         self.assertLess(early, mid)
         self.assertLess(mid, late)
+
+    def test_early_curriculum_prioritizes_strong_heuristics(self) -> None:
+        mix = get_curriculum_mix(1)
+        weak_share = mix["heu_easy"] + mix["heu_normal"]
+        strong_share = (
+            mix["heu_hard"]
+            + mix["heu_apex"]
+            + mix["heu_gambit"]
+            + mix["heu_sentinel"]
+        )
+
+        self.assertLessEqual(mix["heu_easy"], 0.05)
+        self.assertLessEqual(weak_share, 0.25)
+        self.assertGreaterEqual(strong_share, 0.75)
+        self.assertLessEqual(mix["random"], 0.03)
 
     def test_sampling_outputs_known_labels(self) -> None:
         rng = np.random.default_rng(seed=7)

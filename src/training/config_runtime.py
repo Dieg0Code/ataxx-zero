@@ -8,6 +8,10 @@ from typing import Literal, cast
 import numpy as np
 
 from agents.heuristic import HEURISTIC_LEVELS, is_supported_heuristic_level
+from training.config_validation_runtime import (
+    validate_reward_shaping_config,
+    validate_supported_heuristic_csv,
+)
 
 TrainerPrecision = Literal[
     "16",
@@ -23,8 +27,6 @@ TrainerPrecision = Literal[
     "transformer-engine",
     "transformer-engine-float16",
 ]
-
-
 CONFIG: dict[str, int | float | bool | str] = {
     "iterations": 20,
     "episodes_per_iter": 60,
@@ -40,6 +42,12 @@ CONFIG: dict[str, int | float | bool | str] = {
     "learning_rate": 3e-4,
     "weight_decay": 1e-4,
     "value_loss_coeff": 0.5,
+    "reward_shaping_enabled": True,
+    "reward_shaping_scale": 0.1,
+    "reward_shaping_gamma": 0.99,
+    "reward_shaping_material_weight": 0.6,
+    "reward_shaping_mobility_weight": 0.4,
+    "reward_shaping_draw_penalty": 0.1,
     "buffer_size": 50_000,
     "val_split": 0.1,
     "shuffle_train_val_split": True,
@@ -430,24 +438,17 @@ def validate_config() -> None:
         raise ValueError(
             "CONFIG['warmup_heuristic_level'] must be a supported heuristic level.",
         )
-    warmup_levels_raw = cfg_str("warmup_heuristic_levels").strip()
-    if warmup_levels_raw != "":
-        for level in [part.strip() for part in warmup_levels_raw.split(",") if part.strip()]:
-            if not is_supported_heuristic_level(level):
-                raise ValueError(
-                    "CONFIG['warmup_heuristic_levels'] contains unsupported level "
-                    f"'{level}'.",
-                )
-    eval_levels_raw = cfg_str("eval_heuristic_levels").strip()
-    if eval_levels_raw != "":
-        for level in [part.strip() for part in eval_levels_raw.split(",") if part.strip()]:
-            if not is_supported_heuristic_level(level):
-                raise ValueError(
-                    "CONFIG['eval_heuristic_levels'] contains unsupported level "
-                    f"'{level}'.",
-                )
+    validate_supported_heuristic_csv(
+        raw_levels=cfg_str("warmup_heuristic_levels").strip(),
+        setting_name="warmup_heuristic_levels",
+    )
+    validate_supported_heuristic_csv(
+        raw_levels=cfg_str("eval_heuristic_levels").strip(),
+        setting_name="eval_heuristic_levels",
+    )
     if cfg_float("value_loss_coeff") < 0.0:
         raise ValueError("CONFIG['value_loss_coeff'] must be >= 0.")
+    validate_reward_shaping_config(cfg_float)
     if cfg_int("mcts_cache_size") < 0:
         raise ValueError("CONFIG['mcts_cache_size'] must be >= 0.")
     if cfg_int("ddp_timeout_seconds") <= 0:
@@ -492,7 +493,6 @@ def validate_config() -> None:
             f"Heuristic level probs sum to {heu_sum:.6f}; they will be normalized automatically.",
             verbose_only=True,
         )
-
 
 def resolve_trainer_precision(accelerator: str) -> TrainerPrecision:
     configured = cast(TrainerPrecision, cfg_str("trainer_precision"))

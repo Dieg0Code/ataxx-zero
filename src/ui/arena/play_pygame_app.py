@@ -18,6 +18,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from ui.arena.layout import BOARD_PX, CELL, PAD, WIN_H, WIN_W  # noqa: E402
+from ui.arena.model_runtime import (  # noqa: E402
+    build_model_mcts_by_player,
+    resolve_model_checkpoints,
+)
 from ui.arena.theme import (  # noqa: E402
     AI_DELAY_JITTER,
     AI_DELAY_MAX,
@@ -62,6 +66,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ataxx arena (play/spectate).")
     parser.add_argument("--mode", default="play", choices=["play", "spectate"])
     parser.add_argument("--checkpoint", "--ckpt", default="")
+    parser.add_argument("--p1-checkpoint", "--ckpt1", default="")
+    parser.add_argument("--p2-checkpoint", "--ckpt2", default="")
     parser.add_argument("--opponent", "--opp", default="heuristic", choices=["random", "heuristic", "model"])
     parser.add_argument("--human-player", "--human-side", default="p1", choices=["p1", "p2"])
     parser.add_argument(
@@ -426,7 +432,6 @@ def _draw(
     )
 def main() -> None:
     _ensure_src_on_path()
-    from engine.mcts import MCTS
     from game.board import AtaxxBoard
 
     args = _parse_args()
@@ -435,14 +440,21 @@ def main() -> None:
     p1_level, p2_level = _resolve_heuristic_levels(args, p1_agent, p2_agent)
     rng = np.random.default_rng(seed=None if args.seed < 0 else args.seed)
 
-    mcts: MCTS | None = None
+    model_mcts_by_player = {PLAYER_1: None, PLAYER_2: None}
     if p1_agent == "model" or p2_agent == "model":
-        system = _load_system(args.checkpoint, device=device)
-        mcts = MCTS(
-            model=system.model,
+        checkpoints_by_player = resolve_model_checkpoints(
+            shared_checkpoint=args.checkpoint,
+            p1_agent=p1_agent,
+            p2_agent=p2_agent,
+            p1_checkpoint=args.p1_checkpoint,
+            p2_checkpoint=args.p2_checkpoint,
+        )
+        model_mcts_by_player = build_model_mcts_by_player(
+            checkpoints_by_player=checkpoints_by_player,
+            device=device,
             c_puct=args.c_puct,
             n_simulations=args.mcts_sims,
-            device=device,
+            load_system=_load_system,
         )
 
     pygame.init()
@@ -629,7 +641,7 @@ def main() -> None:
                     agent=turn_agent,
                     rng=rng,
                     heuristic_level=p1_level if player == PLAYER_1 else p2_level,
-                    mcts=mcts,
+                    mcts=model_mcts_by_player[player],
                 )
                 pending_move = move
                 preview_started_at = now_ms

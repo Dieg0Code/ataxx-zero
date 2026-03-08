@@ -242,6 +242,12 @@ class AtaxxBoard:
             return WIN_P2
         return DRAW
 
+    def is_forced_draw(self) -> bool:
+        """Expose loop/cap draws so training can punish non-terminating play."""
+        if not self.is_game_over():
+            return False
+        return self.half_moves >= 100 or max(self._position_counts.values(), default=0) >= 3
+
     def get_canonical_form(self) -> np.ndarray:
         """
         Current-player perspective:

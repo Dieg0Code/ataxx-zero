@@ -16,9 +16,15 @@ from training.config_runtime import (
     cfg_int,
     log,
 )
+from training.reward_runtime import (
+    HistoryEntry,
+    compute_state_potential,
+    compute_transition_shaping_reward,
+    history_to_examples,
+)
 
 if TYPE_CHECKING:
-    from data.replay_buffer import ReplayBuffer, TrainingExample
+    from data.replay_buffer import ReplayBuffer
     from engine.mcts import MCTS, MCTSNode
     from game.board import AtaxxBoard
     from model.system import AtaxxZero
@@ -79,13 +85,14 @@ def play_episode(
     opponent_type: str,
     opponent_heuristic_level: str,
     model_player: int,
-) -> tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]:
+) -> tuple[list[HistoryEntry], int, int, bool]:
     from game.board import AtaxxBoard
 
     board = AtaxxBoard()
     root = None
-    game_history: list[tuple[np.ndarray, np.ndarray, int]] = []
+    game_history: list[HistoryEntry] = []
     turn_idx = 0
+    shaping_enabled = cfg_bool("reward_shaping_enabled")
 
     while not board.is_game_over():
         turn_idx += 1
@@ -100,19 +107,25 @@ def play_episode(
                 add_noise=use_noise,
                 temperature=temperature,
             )
-            game_history.append(
-                (
-                    board.get_observation(),
-                    probs,
-                    board.current_player,
-                )
-            )
+            observation = board.get_observation()
+            player_at_turn = int(board.current_player)
+            shaping_reward = 0.0
+            before_potential = 0.0
+            if shaping_enabled:
+                before_potential = compute_state_potential(board, player_at_turn)
             action_idx = select_action_idx(
                 probs=probs,
                 temperature=temperature,
                 rng=rng,
             )
             board.step(ACTION_SPACE.decode(action_idx))
+            if shaping_enabled:
+                after_potential = compute_state_potential(board, player_at_turn)
+                shaping_reward = compute_transition_shaping_reward(
+                    before_potential=before_potential,
+                    after_potential=after_potential,
+                )
+            game_history.append((observation, probs, player_at_turn, shaping_reward))
             root = mcts.advance_root(root, action_idx)
             continue
 
@@ -126,7 +139,7 @@ def play_episode(
         board.step(move)
         root = mcts.advance_root(root, ACTION_SPACE.encode(move))
 
-    return game_history, board.get_result(), turn_idx
+    return game_history, board.get_result(), turn_idx, board.is_forced_draw()
 
 
 def _init_selfplay_process_worker(
@@ -161,7 +174,7 @@ def _init_selfplay_process_worker(
 
 def _run_episode_in_process_worker(
     payload: tuple[int, str, str, int, bool, int],
-) -> tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]:
+) -> tuple[list[HistoryEntry], int, int, bool]:
     global _WORKER_MCTS
     if _WORKER_MCTS is None:
         raise RuntimeError("Worker MCTS is not initialized.")
@@ -190,24 +203,6 @@ def update_stats(stats: dict[str, float | int], winner: int, turn_idx: int) -> N
         stats["wins_p2"] = int(stats["wins_p2"]) + 1
         return
     stats["draws"] = int(stats["draws"]) + 1
-
-
-def history_to_examples(
-    game_history: list[tuple[np.ndarray, np.ndarray, int]],
-    winner: int,
-) -> list[TrainingExample]:
-    examples: list[TrainingExample] = []
-    for observation, policy, player_at_turn in game_history:
-        if winner == 0:
-            z = 0.0
-        elif winner == player_at_turn:
-            z = 1.0
-        else:
-            z = -1.0
-        examples.append((observation, policy, z))
-    return examples
-
-
 def handle_parallel_selfplay_failure(exc: Exception) -> None:
     if cfg_bool("fail_on_selfplay_parallel_error"):
         raise RuntimeError(
@@ -280,7 +275,7 @@ def execute_self_play(
         episode_specs.append((episode_seed, opponent_type, heuristic_level, model_player))
 
     used_parallel = False
-    episode_results: list[tuple[str, str, list[tuple[np.ndarray, np.ndarray, int]], int, int]] = []
+    episode_results: list[tuple[str, str, list[HistoryEntry], int, int, bool]] = []
 
     if selfplay_workers > 1:
         try:
@@ -320,13 +315,13 @@ def execute_self_play(
                     cfg_int("mcts_sims"),
                 ),
             ) as executor:
-                futures: dict[Future[tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]], tuple[int, str, str]] = {}
+                futures: dict[Future[tuple[list[HistoryEntry], int, int, bool]], tuple[int, str, str]] = {}
                 submitted_at: dict[
-                    Future[tuple[list[tuple[np.ndarray, np.ndarray, int]], int, int]],
+                    Future[tuple[list[HistoryEntry], int, int, bool]],
                     float,
                 ] = {}
                 ordered_results: list[
-                    tuple[int, str, str, list[tuple[np.ndarray, np.ndarray, int]], int, int]
+                    tuple[int, str, str, list[HistoryEntry], int, int, bool]
                 ] = []
                 for idx, ((_, opponent_type, heuristic_level, _), payload) in enumerate(
                     zip(episode_specs, worker_payloads, strict=True),
@@ -363,7 +358,7 @@ def execute_self_play(
 
                     for future in done:
                         idx, opponent_type, heuristic_level = futures[future]
-                        game_history, winner, turn_idx = future.result()
+                        game_history, winner, turn_idx, forced_draw = future.result()
                         ordered_results.append(
                             (
                                 idx,
@@ -372,6 +367,7 @@ def execute_self_play(
                                 game_history,
                                 winner,
                                 turn_idx,
+                                forced_draw,
                             )
                         )
                         submitted_at.pop(future, None)
@@ -391,9 +387,17 @@ def execute_self_play(
                     game_history,
                     winner,
                     turn_idx,
+                    forced_draw,
                 ) in ordered_results:
                     episode_results.append(
-                        (opponent_type, heuristic_level, game_history, winner, turn_idx)
+                        (
+                            opponent_type,
+                            heuristic_level,
+                            game_history,
+                            winner,
+                            turn_idx,
+                            forced_draw,
+                        )
                     )
             used_parallel = True
             log(f"[Iteration {iteration}] self-play process workers active: {max_workers}")
@@ -404,7 +408,7 @@ def execute_self_play(
     if not used_parallel:
         for episode_seed, opponent_type, heuristic_level, model_player in episode_specs:
             local_rng = np.random.default_rng(seed=episode_seed)
-            game_history, winner, turn_idx = play_episode(
+            game_history, winner, turn_idx, forced_draw = play_episode(
                 mcts=mcts,
                 add_noise=add_noise,
                 temp_threshold=temp_threshold,
@@ -413,7 +417,16 @@ def execute_self_play(
                 opponent_heuristic_level=heuristic_level,
                 model_player=model_player,
             )
-            episode_results.append((opponent_type, heuristic_level, game_history, winner, turn_idx))
+            episode_results.append(
+                (
+                    opponent_type,
+                    heuristic_level,
+                    game_history,
+                    winner,
+                    turn_idx,
+                    forced_draw,
+                ),
+            )
             now_s = time.perf_counter()
             if (now_s - last_progress_log_s) >= progress_every_s:
                 log(
@@ -422,7 +435,14 @@ def execute_self_play(
                 )
                 last_progress_log_s = now_s
 
-    for episode_idx, (opponent_type, heuristic_level, game_history, winner, turn_idx) in enumerate(
+    for episode_idx, (
+        opponent_type,
+        heuristic_level,
+        game_history,
+        winner,
+        turn_idx,
+        forced_draw,
+    ) in enumerate(
         episode_results,
         start=1,
     ):
@@ -432,7 +452,13 @@ def execute_self_play(
                 stats[f"episodes_vs_heuristic_{heuristic_level}"]
             ) + 1
         update_stats(stats=stats, winner=winner, turn_idx=turn_idx)
-        buffer.save_game(history_to_examples(game_history=game_history, winner=winner))
+        buffer.save_game(
+            history_to_examples(
+                game_history=game_history,
+                winner=winner,
+                forced_draw=forced_draw,
+            ),
+        )
 
         log_every = cfg_int("episode_log_every")
         if log_every > 0 and episode_idx % log_every == 0:
