@@ -56,6 +56,13 @@ class MCTS:
         self._cache_hits = 0
         self._cache_misses = 0
 
+    @staticmethod
+    def _sample_tied_index(candidate_indices: np.ndarray) -> int:
+        if candidate_indices.size == 1:
+            return int(candidate_indices[0])
+        picked = int(np.random.randint(0, candidate_indices.size))
+        return int(candidate_indices[picked])
+
     def run(
         self,
         board: AtaxxBoard,
@@ -232,9 +239,9 @@ class MCTS:
             child.prior = (1.0 - frac) * child.prior + frac * float(noise[idx])
 
     def _select_child(self, node: MCTSNode) -> tuple[int, MCTSNode]:
-        best_action = -1
-        best_child: MCTSNode | None = None
         best_score = -float("inf")
+        tied_actions: list[int] = []
+        tied_children: list[MCTSNode] = []
         sqrt_parent = math.sqrt(node.visit_count + 1)
 
         for action_idx, child in node.children.items():
@@ -242,14 +249,21 @@ class MCTS:
             q_value = -child.value()
             u_value = self.c_puct * child.prior * sqrt_parent / (1 + child.visit_count)
             score = q_value + u_value
-            if score > best_score:
+            # Early training often produces flat priors/value estimates. If we always
+            # keep the first child on exact ties, search collapses into one opening.
+            if score > (best_score + 1e-12):
                 best_score = score
-                best_action = action_idx
-                best_child = child
+                tied_actions = [action_idx]
+                tied_children = [child]
+                continue
+            if math.isclose(score, best_score, rel_tol=0.0, abs_tol=1e-12):
+                tied_actions.append(action_idx)
+                tied_children.append(child)
 
-        if best_child is None:
+        if len(tied_children) == 0:
             raise RuntimeError("No child selected from a non-empty node.")
-        return best_action, best_child
+        picked = self._sample_tied_index(np.arange(len(tied_children), dtype=np.int64))
+        return tied_actions[picked], tied_children[picked]
 
     def _expand(self, node: MCTSNode, board: AtaxxBoard) -> float:
         """
@@ -281,8 +295,10 @@ class MCTS:
         )
 
         if temperature <= 0.0:
-            best_idx = int(np.argmax(visit_counts))
-            probs[int(actions[best_idx])] = 1.0
+            max_visits = float(np.max(visit_counts))
+            best_indices = np.flatnonzero(visit_counts == max_visits)
+            chosen = self._sample_tied_index(best_indices)
+            probs[int(actions[chosen])] = 1.0
             return probs
 
         adjusted = np.power(visit_counts, 1.0 / temperature)

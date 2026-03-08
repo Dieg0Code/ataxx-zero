@@ -10,7 +10,7 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from engine.mcts import MCTS
+from engine.mcts import MCTS, MCTSNode
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
 from model.transformer import AtaxxTransformerNet
@@ -216,6 +216,60 @@ class TestMCTSNumerics(unittest.TestCase):
         self.assertGreaterEqual(int(stats_second["hits"]), 1)
         self.assertGreaterEqual(float(stats_second["hit_rate"]), 0.0)
         self.assertLessEqual(float(stats_second["hit_rate"]), 1.0)
+
+    def test_select_child_does_not_always_pick_first_on_exact_tie(self) -> None:
+        model = AtaxxTransformerNet(
+            d_model=64,
+            nhead=8,
+            num_layers=2,
+            dim_feedforward=128,
+            dropout=0.0,
+        )
+        mcts = MCTS(model=model, c_puct=1.5, n_simulations=1, device="cpu")
+        root = MCTSNode(prior=1.0)
+        root.visit_count = 4
+        root.children = {
+            11: MCTSNode(prior=0.5),
+            23: MCTSNode(prior=0.5),
+        }
+        chosen_actions: set[int] = set()
+
+        for seed in range(32):
+            np.random.seed(seed)
+            action_idx, _child = mcts._select_child(root)
+            chosen_actions.add(action_idx)
+
+        self.assertEqual(chosen_actions, {11, 23})
+
+    def test_temperature_zero_breaks_visit_ties_without_fixed_first_action(self) -> None:
+        class UniformModel(nn.Module):
+            def forward(
+                self,
+                board_tensor: torch.Tensor,
+                action_mask: torch.Tensor | None = None,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                batch = board_tensor.shape[0]
+                logits = torch.zeros((batch, ACTION_SPACE.num_actions), dtype=torch.float32)
+                value = torch.zeros((batch, 1), dtype=torch.float32)
+                if action_mask is not None:
+                    logits = logits.masked_fill(action_mask <= 0, -1e9)
+                return logits, value
+
+        board = AtaxxBoard()
+        chosen_actions: set[int] = set()
+        for seed in range(32):
+            np.random.seed(seed)
+            mcts = MCTS(
+                model=UniformModel(),
+                c_puct=1.5,
+                n_simulations=0,
+                device="cpu",
+                cache_size=0,
+            )
+            probs = mcts.run(board=board, add_dirichlet_noise=False, temperature=0.0)
+            chosen_actions.add(int(np.argmax(probs)))
+
+        self.assertGreater(len(chosen_actions), 1)
 
 
 if __name__ == "__main__":
