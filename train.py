@@ -320,16 +320,19 @@ def main() -> None:
             if cfg_bool("league_enabled") and len(eval_level_summaries) > 0:
                 try:
                     champion_entry = resolve_champion_entry(current_checkpoint_path=manual_ckpt)
-                    champion_series_summary = None
+                    champion_series_summary: dict[str, float | int | str] | None = None
                     if champion_entry is not None and cfg_int("league_champion_games") > 0:
-                        champion_series_summary = run_match_results_to_summary(
-                            checkpoint_a=manual_ckpt,
-                            checkpoint_b=champion_entry.artifact_path,
-                            games=cfg_int("league_champion_games"),
-                            device=device,
-                            mcts_sims=cfg_int("eval_sims"),
-                            c_puct=cfg_float("c_puct"),
-                            seed=cfg_int("seed") + 200_000 + iteration,
+                        champion_series_summary = cast(
+                            dict[str, float | int | str],
+                            run_match_results_to_summary(
+                                checkpoint_a=manual_ckpt,
+                                checkpoint_b=champion_entry.artifact_path,
+                                games=cfg_int("league_champion_games"),
+                                device=device,
+                                mcts_sims=cfg_int("eval_sims"),
+                                c_puct=cfg_float("c_puct"),
+                                seed=cfg_int("seed") + 200_000 + iteration,
+                            ),
                         )
                         monitor.log_warning(
                             iteration=iteration,
