@@ -35,21 +35,32 @@ class MatchesRepository:
         return result.scalars().first()
 
     async def save_game(self, game: Game) -> Game:
-        self.session.add(game)
+        await self.save_game_uncommitted(game)
         await self.session.commit()
         await self.session.refresh(game)
         return game
 
+    async def save_game_uncommitted(self, game: Game) -> Game:
+        self.session.add(game)
+        return game
+
     async def create_move(self, move: GameMove) -> GameMove:
-        self.session.add(move)
+        await self.create_move_uncommitted(move)
         await self.session.commit()
         await self.session.refresh(move)
         return move
 
+    async def create_move_uncommitted(self, move: GameMove) -> GameMove:
+        self.session.add(move)
+        return move
+
     async def next_ply(self, game_id: UUID) -> int:
-        stmt = select(GameMove).where(GameMove.game_id == game_id)
+        stmt = select(func.count()).select_from(GameMove).where(GameMove.game_id == game_id)
         result = await self.session.execute(stmt)
-        return len(list(result.scalars().all()))
+        return int(result.scalar_one())
+
+    async def commit(self) -> None:
+        await self.session.commit()
 
     async def get_last_move(self, game_id: UUID) -> GameMove | None:
         stmt = (

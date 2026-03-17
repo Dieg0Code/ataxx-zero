@@ -273,7 +273,7 @@ class MatchesService:
         board_after = board_to_state(board)
 
         ply = await self.repository.next_ply(game_id)
-        stored = await self.repository.create_move(
+        stored = await self.repository.create_move_uncommitted(
             GameMove(
                 game_id=game_id,
                 ply=ply,
@@ -289,8 +289,14 @@ class MatchesService:
                 value=0.0,
             )
         )
-
-        await self._update_game_terminal_state(game=game, board=board)
+        should_apply_rated_result = await self._update_game_terminal_state(
+            game=game,
+            board=board,
+            commit=False,
+        )
+        await self.repository.commit()
+        if should_apply_rated_result:
+            await self._apply_rated_result(game)
         return stored
 
     async def advance_bot_turn(
@@ -368,7 +374,7 @@ class MatchesService:
         board_after = board_to_state(board)
         ply = await self.repository.next_ply(game_id)
 
-        stored = await self.repository.create_move(
+        stored = await self.repository.create_move_uncommitted(
             GameMove(
                 game_id=game_id,
                 ply=ply,
@@ -384,7 +390,14 @@ class MatchesService:
                 value=value,
             )
         )
-        await self._update_game_terminal_state(game=game, board=board)
+        should_apply_rated_result = await self._update_game_terminal_state(
+            game=game,
+            board=board,
+            commit=False,
+        )
+        await self.repository.commit()
+        if should_apply_rated_result:
+            await self._apply_rated_result(game)
         return stored
 
     @staticmethod
@@ -399,12 +412,21 @@ class MatchesService:
             return PlayerSide.P2
         raise PermissionError("Authenticated user is not a participant in this match.")
 
-    async def _update_game_terminal_state(self, game: Game, board: AtaxxBoard) -> None:
+    async def _update_game_terminal_state(
+        self,
+        game: Game,
+        board: AtaxxBoard,
+        *,
+        commit: bool = True,
+    ) -> bool:
         if not board.is_game_over():
             if game.status != GameStatus.IN_PROGRESS:
                 game.status = GameStatus.IN_PROGRESS
-                await self.repository.save_game(game)
-            return
+                if commit:
+                    await self.repository.save_game(game)
+                else:
+                    await self.repository.save_game_uncommitted(game)
+            return False
 
         result = board.get_result()
         if result == 1:
@@ -420,28 +442,39 @@ class MatchesService:
         game.status = GameStatus.FINISHED
         game.termination_reason = TerminationReason.NORMAL
         game.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await self.repository.save_game(game)
+        if commit:
+            await self.repository.save_game(game)
+        else:
+            await self.repository.save_game_uncommitted(game)
+        return self._should_apply_rated_result(game)
 
-        if (
+    def _should_apply_rated_result(self, game: Game) -> bool:
+        return (
             game.rated
             and game.season_id is not None
             and game.player1_id is not None
             and game.player2_id is not None
             and game.winner_side is not None
             and self.ranking_service is not None
-        ):
-            await self.ranking_service.apply_rated_result(
-                game_id=game.id,
-                season_id=game.season_id,
-                player1_id=game.player1_id,
-                player2_id=game.player2_id,
-                winner_side=game.winner_side,
-            )
-            # Keep public leaderboard in sync with the latest rated result.
-            await self.ranking_service.recompute_leaderboard(
-                season_id=game.season_id,
-                limit=500,
-            )
+        )
+
+    async def _apply_rated_result(self, game: Game) -> None:
+        if self.ranking_service is None:
+            raise RuntimeError("Ranking service is required for rated result finalization.")
+        if game.season_id is None or game.player1_id is None or game.player2_id is None or game.winner_side is None:
+            raise RuntimeError("Rated game is missing required identifiers for rating application.")
+        await self.ranking_service.apply_rated_result(
+            game_id=game.id,
+            season_id=game.season_id,
+            player1_id=game.player1_id,
+            player2_id=game.player2_id,
+            winner_side=game.winner_side,
+        )
+        # Keep public leaderboard in sync with the latest rated result.
+        await self.ranking_service.recompute_leaderboard(
+            season_id=game.season_id,
+            limit=500,
+        )
 
     @staticmethod
     def _to_side(player: int) -> PlayerSide:

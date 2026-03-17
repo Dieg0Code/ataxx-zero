@@ -380,6 +380,8 @@ export function MatchPage(): JSX.Element {
   const [guestUsername, setGuestUsername] = useState<string | null>(() => loadGuestProfileUsername());
   const [guestRivalName, setGuestRivalName] = useState<string | null>(null);
   const [queueRedirecting, setQueueRedirecting] = useState(false);
+  const [remoteGameStatus, setRemoteGameStatus] = useState<string | null>(null);
+  const [syncingRemoteResult, setSyncingRemoteResult] = useState(false);
   const [finishLpDelta, setFinishLpDelta] = useState<number | null>(null);
   const [finishRatingDelta, setFinishRatingDelta] = useState<number | null>(null);
   const [finishTransitionType, setFinishTransitionType] = useState<"promotion" | "demotion" | "stable" | null>(null);
@@ -502,6 +504,7 @@ export function MatchPage(): JSX.Element {
   );
   const outcome = useMemo(() => getOutcome(board), [board]);
   const gameFinished = useMemo(() => isGameOver(board), [board]);
+  const remoteGameFinished = remoteGameStatus === "finished";
   const canPersist = Boolean(accessToken);
   const isSpectate = matchMode === "spectate";
   const interactionLocked = thinking || persisting;
@@ -663,7 +666,7 @@ export function MatchPage(): JSX.Element {
     finishRatingDelta !== null &&
     finishRatingDelta >= 18;
   const isResultOverlayOpen = gameFinished && !showIntro;
-  const showDeferredResultStats = !queueRanked || !loadingFinishRewards;
+  const showDeferredResultStats = !queueRanked || (!syncingRemoteResult && !loadingFinishRewards);
 
   const allCurrentMoves = useMemo(() => getValidMoves(board, board.current_player), [board]);
   const selectedMoves = useMemo(() => {
@@ -700,6 +703,7 @@ export function MatchPage(): JSX.Element {
     let cancelled = false;
     if (
       !gameFinished ||
+      !remoteGameFinished ||
       !queueRanked ||
       persistedGameId === null ||
       accessToken === null ||
@@ -762,7 +766,7 @@ export function MatchPage(): JSX.Element {
           if (!resolved) {
             try {
               const events = await withRetry(
-                () => fetchRatingEvents(user.id, seasonId, 12, 0),
+                () => fetchRatingEvents(user.id, seasonId, 50, 0),
                 { attempts: 2, baseDelayMs: 120 },
               );
               const foundEvent = events.items.find((item) => item.game_id === persistedGameId);
@@ -841,7 +845,7 @@ export function MatchPage(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, gameFinished, persistedGameId, queueRanked, ratingBaseline, user?.id]);
+  }, [accessToken, gameFinished, persistedGameId, queueRanked, ratingBaseline, remoteGameFinished, user?.id]);
 
   useEffect(() => {
     if (!isResultOverlayOpen) {
@@ -1116,6 +1120,7 @@ export function MatchPage(): JSX.Element {
         : [];
       if (restoredGameId !== null) {
         setPersistedGameId(restoredGameId);
+        setRemoteGameStatus("in_progress");
       }
       if (restoredPending.length > 0) {
         failedPersistOpsRef.current = restoredPending;
@@ -1196,6 +1201,7 @@ export function MatchPage(): JSX.Element {
         if (cancelled) {
           return;
         }
+        setRemoteGameStatus(game.status);
         const isLocalP1 = user?.id !== undefined && game.player1_id === user.id;
         const isLocalP2 = user?.id !== undefined && game.player2_id === user.id;
 
@@ -1504,6 +1510,8 @@ export function MatchPage(): JSX.Element {
     setGuestQueueMode(false);
     setGuestRivalName(null);
     setQueueRedirecting(false);
+    setRemoteGameStatus(null);
+    setSyncingRemoteResult(false);
     setRatingBaseline(null);
     setFinishLpDelta(null);
     setFinishRatingDelta(null);
@@ -1606,10 +1614,12 @@ export function MatchPage(): JSX.Element {
       // drawing "preview" for them feels like phantom/late intent lines.
       setResolvedMoves((prev) => Math.max(prev, event.move.ply + 1));
       setResolvedMoveHighlight(remoteMove);
+      setRemoteGameStatus(event.game.status);
 
       if (event.game.status === "finished") {
         setMatchEndMs(Date.now());
         setStatus("Partida finalizada.");
+        setPersistStatus("Partida remota finalizada. Confirmando LP...");
       } else {
         setStatus(`Sincronizado en vivo: jugada ${event.move.ply + 1}.`);
       }
@@ -1780,6 +1790,7 @@ export function MatchPage(): JSX.Element {
       }
       if (queuedGameId !== null) {
         setPersistedGameId(queuedGameId);
+        setRemoteGameStatus("in_progress");
         clearPendingQueue(queuedGameId);
         setPersistStatus(`Partida ranked enlazada: ${queuedGameId.slice(0, 8)}...`);
         setPersistError(null);
@@ -1795,6 +1806,7 @@ export function MatchPage(): JSX.Element {
         player2Agent: opponentProfile,
       });
       setPersistedGameId(gameId);
+      setRemoteGameStatus("in_progress");
       clearPendingQueue(gameId);
       setPersistStatus(`Guardado remoto activo: ${gameId.slice(0, 8)}...`);
       setPersistError(null);
@@ -1866,6 +1878,8 @@ export function MatchPage(): JSX.Element {
     setFinishRatingDelta(null);
     setFinishTransitionType(null);
     setLoadingFinishRewards(false);
+    setRemoteGameStatus(null);
+    setSyncingRemoteResult(false);
     setBoard(createInitialBoard());
     setSelected(null);
     setEvalValue(null);
@@ -1988,7 +2002,7 @@ export function MatchPage(): JSX.Element {
         setMatchEndMs(Date.now());
         setStatus(`${winnerLabel(getOutcome(next))}. Fin de partida.`);
         if (persistedGameId !== null) {
-          setPersistStatus("Partida finalizada. Sincronizando replay...");
+          setPersistStatus("Partida finalizada. Esperando cierre remoto...");
         }
         return;
       }
@@ -2222,6 +2236,7 @@ export function MatchPage(): JSX.Element {
     setThinking(true);
     try {
       const payload = await fetchPersistedReplay(accessToken, persistedGameId);
+      setRemoteGameStatus(payload.game.status);
       setPersistStatus(`Replay sincronizado. Jugadas: ${payload.moves.length}`);
       setPersistError(null);
       emitFlash("Replay sincronizada.", "success");
@@ -2235,11 +2250,11 @@ export function MatchPage(): JSX.Element {
   }, [accessToken, canPersist, emitFlash, persistedGameId]);
 
   useEffect(() => {
-    if (!gameFinished || persistedGameId === null || accessToken === null || !canPersist) {
+    if (!gameFinished || !remoteGameFinished || persistedGameId === null || accessToken === null || !canPersist) {
       return;
     }
     void refreshReplay();
-  }, [accessToken, canPersist, gameFinished, persistedGameId, refreshReplay]);
+  }, [accessToken, canPersist, gameFinished, persistedGameId, refreshReplay, remoteGameFinished]);
 
   const retryFailedPersistence = useCallback(async () => {
     if (failedPersistOpsRef.current.length === 0 || persistedGameId === null) {
@@ -2265,6 +2280,10 @@ export function MatchPage(): JSX.Element {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Error desconocido al reintentar sincronizacion";
+        if (isPersistenceConflictError(error)) {
+          setPersistStatus("Sincronizacion remota alcanzo una jugada pendiente obsoleta.");
+          continue;
+        }
         if (isFatalPersistenceError(error)) {
           disableRemotePersistence(`Persistencia detenida: ${message}`);
           setRetryingPersist(false);
@@ -2293,6 +2312,56 @@ export function MatchPage(): JSX.Element {
     persistSnapshot,
     refreshReplay,
   ]);
+
+  useEffect(() => {
+    if (!gameFinished || pendingPersistCount === 0 || retryingPersist) {
+      return;
+    }
+    void retryFailedPersistence();
+  }, [gameFinished, pendingPersistCount, retryFailedPersistence, retryingPersist]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!gameFinished || persistedGameId === null || accessToken === null || !canPersist || remoteGameFinished) {
+      setSyncingRemoteResult(false);
+      return;
+    }
+    setSyncingRemoteResult(true);
+    void (async () => {
+      const maxAttempts = 90;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (cancelled) {
+          return;
+        }
+        try {
+          const summary = await withRetry(
+            () => fetchPersistedGameSummary(accessToken, persistedGameId),
+            { attempts: 2, baseDelayMs: 180 },
+          );
+          if (cancelled) {
+            return;
+          }
+          setRemoteGameStatus(summary.status);
+          if (summary.status === "finished") {
+            setPersistStatus("Partida remota finalizada. Confirmando LP...");
+            return;
+          }
+        } catch {
+          // Keep polling; ranked result should wait for remote closure instead of forcing stale LP.
+        }
+        if (attempt < maxAttempts) {
+          await sleep(1000);
+        }
+      }
+    })().finally(() => {
+      if (!cancelled) {
+        setSyncingRemoteResult(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, canPersist, gameFinished, persistedGameId, remoteGameFinished]);
 
   const onCellClick = useCallback(
     (row: number, col: number) => {
@@ -2679,7 +2748,7 @@ export function MatchPage(): JSX.Element {
                             animate={{ opacity: [0, 1, 0.78], y: 0 }}
                             transition={{ duration: 0.65, ease: "easeOut", delay: 0.05 }}
                           >
-                            recompensa confirmada
+                            {queueRanked && !showDeferredResultStats ? "resultado sincronizando" : "recompensa confirmada"}
                           </motion.p>
                         )}
                         {isEliteWin && (
@@ -2727,7 +2796,7 @@ export function MatchPage(): JSX.Element {
                               <Activity className="h-4 w-4 text-lime-300/75" />
                             </div>
                             <p className="relative mt-1 text-xs text-zinc-400">
-                              Confirmando LP y cerrando reporte final.
+                              Esperando cierre remoto y confirmacion de LP.
                             </p>
                             <motion.div
                               className="relative mt-3 h-px bg-zinc-800"

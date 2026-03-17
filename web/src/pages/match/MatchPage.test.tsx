@@ -19,6 +19,9 @@ const fetchInvitationGameMock = vi.fn();
 const rejectInvitationMock = vi.fn();
 const storeInferredMoveMock = vi.fn();
 const storeManualMoveMock = vi.fn();
+const fetchActiveSeasonMock = vi.fn();
+const fetchUserRatingMock = vi.fn();
+const fetchRatingEventsMock = vi.fn();
 const useAuthMock = vi.fn();
 const navigateMock = vi.fn();
 const mockLocation = {
@@ -56,6 +59,12 @@ vi.mock("@/features/matches/api", () => ({
   createHumanInvitation: (...args: unknown[]) => createHumanInvitationMock(...args),
   fetchInvitationGame: (...args: unknown[]) => fetchInvitationGameMock(...args),
   rejectInvitation: (...args: unknown[]) => rejectInvitationMock(...args),
+}));
+
+vi.mock("@/features/ranking/api", () => ({
+  fetchActiveSeason: (...args: unknown[]) => fetchActiveSeasonMock(...args),
+  fetchUserRating: (...args: unknown[]) => fetchUserRatingMock(...args),
+  fetchRatingEvents: (...args: unknown[]) => fetchRatingEventsMock(...args),
 }));
 
 vi.mock("react-router-dom", () => ({
@@ -114,6 +123,9 @@ describe("MatchPage spectator mode", () => {
     rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
+    fetchActiveSeasonMock.mockReset();
+    fetchUserRatingMock.mockReset();
+    fetchRatingEventsMock.mockReset();
     navigateMock.mockReset();
     mockLocation.pathname = "/match";
     mockLocation.search = "";
@@ -149,6 +161,22 @@ describe("MatchPage spectator mode", () => {
       player2_id: "bot-p1",
       player1_agent: "human",
       player2_agent: "heuristic",
+    });
+    fetchActiveSeasonMock.mockResolvedValue({ id: "season-1" });
+    fetchUserRatingMock.mockResolvedValue({
+      season_id: "season-1",
+      rating: 1200,
+      lp: 0,
+      league: "Protocol",
+      division: "III",
+      games_played: 0,
+    });
+    fetchRatingEventsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      has_more: false,
     });
     fetchPublicPlayersMock.mockResolvedValue([
       {
@@ -286,6 +314,9 @@ describe("MatchPage automatic persistence", () => {
     rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
+    fetchActiveSeasonMock.mockReset();
+    fetchUserRatingMock.mockReset();
+    fetchRatingEventsMock.mockReset();
     navigateMock.mockReset();
     mockLocation.pathname = "/match";
     mockLocation.search = "";
@@ -321,6 +352,22 @@ describe("MatchPage automatic persistence", () => {
       player2_id: "bot-p1",
       player1_agent: "human",
       player2_agent: "heuristic",
+    });
+    fetchActiveSeasonMock.mockResolvedValue({ id: "season-1" });
+    fetchUserRatingMock.mockResolvedValue({
+      season_id: "season-1",
+      rating: 1200,
+      lp: 0,
+      league: "Protocol",
+      division: "III",
+      games_played: 0,
+    });
+    fetchRatingEventsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      has_more: false,
     });
     fetchPublicPlayersMock.mockResolvedValue([
       {
@@ -548,6 +595,9 @@ describe("MatchPage queued human vs human", () => {
     rejectInvitationMock.mockReset();
     storeInferredMoveMock.mockReset();
     storeManualMoveMock.mockReset();
+    fetchActiveSeasonMock.mockReset();
+    fetchUserRatingMock.mockReset();
+    fetchRatingEventsMock.mockReset();
     navigateMock.mockReset();
     mockLocation.pathname = "/match";
     mockLocation.search = "";
@@ -583,6 +633,22 @@ describe("MatchPage queued human vs human", () => {
       player2_id: "u2",
       player1_agent: "human",
       player2_agent: "human",
+    });
+    fetchActiveSeasonMock.mockResolvedValue({ id: "season-1" });
+    fetchUserRatingMock.mockResolvedValue({
+      season_id: "season-1",
+      rating: 1200,
+      lp: 0,
+      league: "Protocol",
+      division: "III",
+      games_played: 0,
+    });
+    fetchRatingEventsMock.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      has_more: false,
     });
     fetchPublicPlayersMock.mockResolvedValue([
       {
@@ -910,4 +976,5 @@ describe("MatchPage queued human vs human", () => {
       { timeout: 240 },
     );
   }, 15000);
+
 });

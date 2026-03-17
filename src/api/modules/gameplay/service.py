@@ -307,8 +307,15 @@ class GameplayService:
             action_idx=inference.action_idx,
             value=inference.value,
         )
-        stored_move = await self.game_repository.create_move(move)
-        await self._update_game_state(game=game, board_after=scratch)
+        stored_move = await self.game_repository.create_move_uncommitted(move)
+        should_apply_rated_result = await self._update_game_state(
+            game=game,
+            board_after=scratch,
+            commit=False,
+        )
+        await self.game_repository.commit()
+        if should_apply_rated_result:
+            await self._apply_rated_result(game)
         return stored_move, game
 
     async def list_game_moves(self, game_id: UUID, limit: int = 200) -> list[GameMove]:
@@ -349,7 +356,7 @@ class GameplayService:
 
         r1, c1, r2, c2 = move
         try:
-            stored_move = await self.game_repository.create_move(
+            stored_move = await self.game_repository.create_move_uncommitted(
                 GameMove(
                     game_id=game_id,
                     ply=ply,
@@ -365,6 +372,12 @@ class GameplayService:
                     value=0.0,
                 )
             )
+            should_apply_rated_result = await self._update_game_state(
+                game=game,
+                board_after=scratch,
+                commit=False,
+            )
+            await self.game_repository.commit()
         except DBAPIError as exc:
             await self.game_repository.rollback()
             if _is_concurrent_move_db_error(exc):
@@ -372,10 +385,17 @@ class GameplayService:
                     "Concurrent move conflict; refresh board and retry."
                 ) from exc
             raise
-        await self._update_game_state(game=game, board_after=scratch)
+        if should_apply_rated_result:
+            await self._apply_rated_result(game)
         return stored_move, game
 
-    async def _update_game_state(self, game: Game, board_after: AtaxxBoard) -> None:
+    async def _update_game_state(
+        self,
+        game: Game,
+        board_after: AtaxxBoard,
+        *,
+        commit: bool = True,
+    ) -> bool:
         changed = False
         if game.started_at is None:
             game.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -383,8 +403,11 @@ class GameplayService:
 
         if not board_after.is_game_over():
             if changed:
-                await self.game_repository.save_game(game)
-            return
+                if commit:
+                    await self.game_repository.save_game(game)
+                else:
+                    await self.game_repository.save_game_uncommitted(game)
+            return False
 
         result = board_after.get_result()
         if result == 1:
@@ -400,28 +423,38 @@ class GameplayService:
         game.status = GameStatus.FINISHED
         game.termination_reason = TerminationReason.NORMAL
         game.ended_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await self.game_repository.save_game(game)
+        if commit:
+            await self.game_repository.save_game(game)
+        else:
+            await self.game_repository.save_game_uncommitted(game)
+        return self._should_apply_rated_result(game)
 
-        if (
+    def _should_apply_rated_result(self, game: Game) -> bool:
+        return (
             game.rated
             and game.season_id is not None
             and game.player1_id is not None
             and game.player2_id is not None
             and game.winner_side is not None
             and self.ranking_service is not None
-        ):
-            await self.ranking_service.apply_rated_result(
-                game_id=game.id,
-                season_id=game.season_id,
-                player1_id=game.player1_id,
-                player2_id=game.player2_id,
-                winner_side=game.winner_side,
-            )
-            # Keep leaderboard_entry synchronized after each rated game result.
-            await self.ranking_service.recompute_leaderboard(
-                season_id=game.season_id,
-                limit=500,
-            )
+        )
 
+    async def _apply_rated_result(self, game: Game) -> None:
+        if self.ranking_service is None:
+            raise RuntimeError("Ranking service is required for rated result finalization.")
+        if game.season_id is None or game.player1_id is None or game.player2_id is None or game.winner_side is None:
+            raise RuntimeError("Rated game is missing required identifiers for rating application.")
+        await self.ranking_service.apply_rated_result(
+            game_id=game.id,
+            season_id=game.season_id,
+            player1_id=game.player1_id,
+            player2_id=game.player2_id,
+            winner_side=game.winner_side,
+        )
+        # Keep leaderboard_entry synchronized after each rated game result.
+        await self.ranking_service.recompute_leaderboard(
+            season_id=game.season_id,
+            limit=500,
+        )
 
 

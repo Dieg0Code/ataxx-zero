@@ -208,9 +208,13 @@ class GameRepository:
         return await self.session.get(User, user_id)
 
     async def create_move(self, move: GameMove) -> GameMove:
-        self.session.add(move)
+        await self.create_move_uncommitted(move)
         await self.session.commit()
         await self.session.refresh(move)
+        return move
+
+    async def create_move_uncommitted(self, move: GameMove) -> GameMove:
+        self.session.add(move)
         return move
 
     async def rollback(self) -> None:
@@ -237,10 +241,17 @@ class GameRepository:
         return list(result.scalars().all())
 
     async def save_game(self, game: Game) -> Game:
-        self.session.add(game)
+        await self.save_game_uncommitted(game)
         await self.session.commit()
         await self.session.refresh(game)
         return game
+
+    async def save_game_uncommitted(self, game: Game) -> Game:
+        self.session.add(game)
+        return game
+
+    async def commit(self) -> None:
+        await self.session.commit()
 
     async def delete_game(self, game_id: UUID) -> bool:
         exists_stmt = (
