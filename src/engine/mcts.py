@@ -50,7 +50,7 @@ class MCTS:
         self.cache_size = max(0, int(cache_size))
         self.leaf_batch_size = max(1, int(leaf_batch_size))
         self._inference_cache: OrderedDict[
-            tuple[int, bytes],
+            bytes,
             tuple[np.ndarray, np.ndarray, float],
         ] = OrderedDict()
         self._cache_hits = 0
@@ -160,12 +160,20 @@ class MCTS:
         for action_idx, prior in zip(legal_action_indices, legal_priors, strict=True):
             node.children[int(action_idx)] = MCTSNode(prior=float(prior / prior_sum))
 
+    @staticmethod
+    def _observation_cache_key(observation: np.ndarray) -> bytes:
+        # Cache entries must be keyed by the exact network input. Using only the
+        # piece grid aliases states that differ in auxiliary channels such as the
+        # half-move counter, which corrupts search with stale priors/values.
+        return observation.tobytes()
+
     def _expand_batch(self, leaves: list[tuple[MCTSNode, AtaxxBoard]]) -> list[float]:
         results: list[float] = [0.0] * len(leaves)
-        to_infer: list[tuple[int, MCTSNode, np.ndarray, tuple[int, bytes], np.ndarray]] = []
+        to_infer: list[tuple[int, MCTSNode, np.ndarray, bytes, np.ndarray]] = []
 
         for idx, (node, board) in enumerate(leaves):
-            cache_key = (int(board.current_player), board.grid.tobytes())
+            obs = board.get_observation()
+            cache_key = self._observation_cache_key(obs)
             cached = self._inference_cache.get(cache_key)
             if cached is not None:
                 self._cache_hits += 1
@@ -185,7 +193,6 @@ class MCTS:
                     dtype=np.int64,
                     count=len(valid_moves),
                 )
-            obs = board.get_observation()
             to_infer.append((idx, node, legal_action_indices, cache_key, obs))
 
         if not to_infer:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -25,14 +24,6 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _extract_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
-    hparams = checkpoint.get("hparams")
-    if not isinstance(hparams, dict):
-        return {}
-    allowed = {"d_model", "nhead", "num_layers", "dim_feedforward", "dropout"}
-    return {key: hparams[key] for key in allowed if key in hparams}
-
-
 class _OnnxExportWrapper(torch.nn.Module):
     def __init__(self, model: torch.nn.Module) -> None:
         super().__init__()
@@ -47,6 +38,12 @@ def main() -> None:
     _ensure_src_on_path()
 
     from game.actions import ACTION_SPACE
+    from game.constants import OBSERVATION_CHANNELS
+    from model.checkpoint_compat import (
+        adapt_state_dict_observation_channels,
+        extract_checkpoint_state_dict,
+        extract_model_kwargs,
+    )
     from model.system import AtaxxZero
 
     checkpoint_path = Path(args.checkpoint)
@@ -55,22 +52,22 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if checkpoint_path.suffix == ".ckpt":
-        system = AtaxxZero.load_from_checkpoint(str(checkpoint_path), map_location="cpu")
-    else:
-        payload = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
-        if not isinstance(payload, dict):
-            raise ValueError("Invalid checkpoint format: expected dictionary.")
-        state_dict_obj = payload.get("state_dict")
-        if not isinstance(state_dict_obj, dict):
-            raise ValueError("Checkpoint dictionary must contain key 'state_dict'.")
-        system = AtaxxZero(**_extract_model_kwargs(payload))
-        system.load_state_dict(state_dict_obj)
+    payload = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid checkpoint format: expected dictionary.")
+    state_dict_obj = extract_checkpoint_state_dict(payload)
+    system = AtaxxZero(**extract_model_kwargs(payload))
+    system.load_state_dict(
+        adapt_state_dict_observation_channels(
+            state_dict_obj,
+            target_channels=int(system.model.num_input_channels),
+        )
+    )
 
     system.eval()
     wrapper = _OnnxExportWrapper(system.model).eval()
 
-    dummy_board = torch.randn(1, 4, 7, 7, dtype=torch.float32)
+    dummy_board = torch.randn(1, OBSERVATION_CHANNELS, 7, 7, dtype=torch.float32)
     dummy_mask = torch.ones(1, ACTION_SPACE.num_actions, dtype=torch.float32)
 
     torch.onnx.export(

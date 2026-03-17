@@ -12,6 +12,7 @@ from training.config_validation_runtime import (
     validate_reward_shaping_config,
     validate_supported_heuristic_csv,
 )
+from training.league_config_runtime import DEFAULT_LEAGUE_CONFIG, validate_league_config
 
 TrainerPrecision = Literal[
     "16",
@@ -48,6 +49,7 @@ CONFIG: dict[str, int | float | bool | str] = {
     "reward_shaping_material_weight": 0.6,
     "reward_shaping_mobility_weight": 0.4,
     "reward_shaping_draw_penalty": 0.1,
+    **DEFAULT_LEAGUE_CONFIG,
     "buffer_size": 50_000,
     "val_split": 0.1,
     "shuffle_train_val_split": True,
@@ -119,7 +121,6 @@ CONFIG: dict[str, int | float | bool | str] = {
     "warmup_heuristic_level": "sentinel",
     "warmup_heuristic_levels": "hard,apex,sentinel",
 }
-
 
 def ensure_src_on_path() -> None:
     root = Path(__file__).resolve().parents[2]
@@ -217,7 +218,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pending-hf-uploads", type=int, default=None)
     parser.add_argument("--hf-upload-timeout-s", type=float, default=None)
     return parser.parse_args()
-
 
 def apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.persistent_workers and args.no_persistent_workers:
@@ -461,6 +461,7 @@ def validate_config() -> None:
         raise ValueError("CONFIG['selfplay_progress_every_s'] must be > 0.")
     if cfg_float("selfplay_episode_timeout_s") < 0.0:
         raise ValueError("CONFIG['selfplay_episode_timeout_s'] must be >= 0.")
+    validate_league_config(cfg_int=cfg_int, cfg_float=cfg_float)
 
     opp_sum = (
         cfg_float("opponent_self_prob")

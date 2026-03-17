@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from game.actions import ACTION_SPACE
-from game.constants import BOARD_SIZE
+from game.constants import BOARD_SIZE, OBSERVATION_CHANNELS
 from training.bootstrap import generate_imitation_data, history_to_examples
 
 
@@ -19,7 +19,7 @@ class TestTrainingBootstrap(unittest.TestCase):
 
         self.assertGreater(len(examples), 0)
         for observation, policy, value in examples:
-            self.assertEqual(observation.shape, (4, BOARD_SIZE, BOARD_SIZE))
+            self.assertEqual(observation.shape, (OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE))
             self.assertEqual(policy.shape, (ACTION_SPACE.num_actions,))
             self.assertAlmostEqual(float(np.sum(policy)), 1.0, places=6)
             self.assertEqual(int(np.count_nonzero(policy)), 1)
@@ -34,7 +34,7 @@ class TestTrainingBootstrap(unittest.TestCase):
         self.assertGreater(len(examples), 0)
 
     def test_history_to_examples_assigns_value_by_player_perspective(self) -> None:
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
         policy[ACTION_SPACE.pass_index] = 1.0
         history = [

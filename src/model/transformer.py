@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 
 from game.actions import ACTION_SPACE
-from game.constants import BOARD_SIZE
+from game.constants import BOARD_SIZE, OBSERVATION_CHANNELS
 
 
 class AtaxxTransformerNet(nn.Module):
@@ -22,7 +24,7 @@ class AtaxxTransformerNet(nn.Module):
         self.board_size = BOARD_SIZE
         self.num_cells = self.board_size * self.board_size
         self.num_actions = ACTION_SPACE.num_actions
-        self.num_input_channels = 4
+        self.num_input_channels = OBSERVATION_CHANNELS
 
         self.input_proj = nn.Linear(self.num_input_channels, d_model)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_cells + 1, d_model))
@@ -86,6 +88,20 @@ class AtaxxTransformerNet(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
+    def build_action_mask(self, x: torch.Tensor) -> torch.Tensor:
+        """Derive legal actions from the board observation without target leakage."""
+        own = x[:, 0].reshape(x.size(0), self.num_cells)
+        empty = x[:, 2].reshape(x.size(0), self.num_cells)
+        src_idx = cast(torch.Tensor, self._action_src_idx)
+        dst_idx = cast(torch.Tensor, self._action_dst_idx)
+        src_is_own = own[:, src_idx] > 0.5
+        dst_is_empty = empty[:, dst_idx] > 0.5
+        action_mask = (src_is_own & dst_is_empty).to(dtype=x.dtype)
+
+        has_move = torch.any(action_mask[:, : self.num_actions - 1] > 0.0, dim=1)
+        action_mask[:, self.num_actions - 1] = (~has_move).to(dtype=x.dtype)
+        return action_mask
+
     def forward(
         self,
         x: torch.Tensor,
@@ -93,7 +109,7 @@ class AtaxxTransformerNet(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            x: [batch, 4, 7, 7]
+            x: [batch, channels, 7, 7]
             action_mask: Optional [batch, num_actions] with 1.0 for legal actions.
         Returns:
             policy_logits: [batch, num_actions]

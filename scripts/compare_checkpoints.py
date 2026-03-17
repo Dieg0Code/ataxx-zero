@@ -4,14 +4,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-import numpy as np
 import torch
-
-if TYPE_CHECKING:
-    from engine.mcts import MCTS
-    from game.board import AtaxxBoard
 
 
 def _ensure_src_on_path() -> None:
@@ -45,21 +39,12 @@ def _resolve_device(device: str) -> str:
     return device
 
 
-def _pick_model_action_idx(board: AtaxxBoard, mcts: MCTS) -> int:
-    probs = mcts.run(board=board, add_dirichlet_noise=False, temperature=0.0)
-    return int(np.argmax(probs))
-
-
 def main() -> None:
     args = _parse_args()
     _ensure_src_on_path()
 
-    from engine.mcts import MCTS
-    from game.actions import ACTION_SPACE
-    from game.board import AtaxxBoard
     from inference.checkpoint_duel_runtime import (
-        build_match_schedule,
-        load_system_from_checkpoint,
+        play_checkpoint_match_results,
         summarize_match_results,
     )
 
@@ -71,43 +56,21 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint B not found: {checkpoint_b}")
 
     device = _resolve_device(args.device)
-    system_a = load_system_from_checkpoint(checkpoint_a, device=device)
-    system_b = load_system_from_checkpoint(checkpoint_b, device=device)
-    mcts_a = MCTS(model=system_a.model, c_puct=args.c_puct, n_simulations=args.mcts_sims, device=device)
-    mcts_b = MCTS(model=system_b.model, c_puct=args.c_puct, n_simulations=args.mcts_sims, device=device)
+    results = play_checkpoint_match_results(
+        checkpoint_a=checkpoint_a,
+        checkpoint_b=checkpoint_b,
+        games=max(1, int(args.games)),
+        device=device,
+        mcts_sims=int(args.mcts_sims),
+        c_puct=float(args.c_puct),
+        seed=int(args.seed),
+    )
 
-    schedule = build_match_schedule(games=max(1, int(args.games)))
-    rng = np.random.default_rng(seed=int(args.seed))
-    results: list[dict[str, int]] = []
-
-    for idx, (checkpoint_a_player, checkpoint_b_player) in enumerate(schedule, start=1):
-        board = AtaxxBoard()
-        turn_seed = int(rng.integers(0, 2**31 - 1))
-        torch.manual_seed(turn_seed)
-        np.random.seed(turn_seed)
-        turns = 0
-        while not board.is_game_over():
-            turns += 1
-            if board.current_player == checkpoint_a_player:
-                action_idx = _pick_model_action_idx(board, mcts_a)
-            elif board.current_player == checkpoint_b_player:
-                action_idx = _pick_model_action_idx(board, mcts_b)
-            else:
-                raise RuntimeError("Unexpected player assignment while comparing checkpoints.")
-            board.step(ACTION_SPACE.decode(action_idx))
-
-        winner = board.get_result()
-        results.append(
-            {
-                "winner": int(winner),
-                "turns": turns,
-                "checkpoint_a_player": checkpoint_a_player,
-            },
-        )
-        color_a = "p1" if checkpoint_a_player == 1 else "p2"
+    for idx, result in enumerate(results, start=1):
+        color_a = "p1" if int(result["checkpoint_a_player"]) == 1 else "p2"
         print(
-            f"[{idx}/{len(schedule)}] "
-            f"checkpoint_a={color_a} winner={winner} turns={turns}",
+            f"[{idx}/{len(results)}] "
+            f"checkpoint_a={color_a} winner={int(result['winner'])} turns={int(result['turns'])}",
         )
 
     summary = summarize_match_results(results=results)

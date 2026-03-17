@@ -1,6 +1,7 @@
 """Game constants for Ataxx."""
 
 BOARD_SIZE = 7
+OBSERVATION_CHANNELS = 11
 
 EMPTY = 0
 PLAYER_1 = 1

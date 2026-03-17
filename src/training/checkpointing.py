@@ -11,6 +11,12 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 
+from game.constants import OBSERVATION_CHANNELS
+from model.checkpoint_compat import (
+    adapt_state_dict_observation_channels,
+    extract_checkpoint_state_dict,
+    pad_observation_channels,
+)
 from training.config_runtime import cfg_bool, cfg_str, log
 
 if TYPE_CHECKING:
@@ -46,6 +52,14 @@ def cleanup_old_log_versions(log_dir: Path, run_name: str, keep_last_n: int) -> 
             child_dir.rmdir()
         old_dir.rmdir()
         log(f"Deleted old log version: {old_dir.name}", verbose_only=True)
+
+
+def _resolve_system_observation_channels(system: AtaxxZero) -> int:
+    target = getattr(getattr(system, "model", None), "num_input_channels", OBSERVATION_CHANNELS)
+    try:
+        return int(target)
+    except (TypeError, ValueError):
+        return OBSERVATION_CHANNELS
 
 
 class HuggingFaceCheckpointer:
@@ -199,13 +213,16 @@ class HuggingFaceCheckpointer:
             local_dir=str(self.local_dir),
         )
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-        if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
+        if not isinstance(checkpoint, dict):
             raise ValueError("Invalid checkpoint format in Hugging Face Hub.")
-        state_dict_obj = checkpoint["state_dict"]
-        if not isinstance(state_dict_obj, dict):
-            raise ValueError("Checkpoint state_dict must be a dictionary.")
+        state_dict_obj = extract_checkpoint_state_dict(checkpoint)
         try:
-            system.load_state_dict(state_dict_obj)
+            system.load_state_dict(
+                adapt_state_dict_observation_channels(
+                    state_dict_obj,
+                    target_channels=_resolve_system_observation_channels(system),
+                )
+            )
         except RuntimeError as exc:
             raise ValueError(
                 "Checkpoint incompatible con architecture policy_head espacial; "
@@ -225,6 +242,10 @@ class HuggingFaceCheckpointer:
                 )
                 data = np.load(buffer_path)
                 observations = data["observations"]
+                observations = pad_observation_channels(
+                    observations,
+                    target_channels=_resolve_system_observation_channels(system),
+                )
                 policies = data["policies"]
                 values = data["values"]
                 examples = list(zip(observations, policies, values, strict=True))

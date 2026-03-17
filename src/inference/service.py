@@ -11,7 +11,13 @@ import numpy as np
 
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
+from game.constants import OBSERVATION_CHANNELS
 from game.types import Move
+from model.checkpoint_compat import (
+    adapt_state_dict_observation_channels,
+    extract_checkpoint_state_dict,
+    extract_model_kwargs,
+)
 
 if TYPE_CHECKING:
     import torch.nn as nn
@@ -134,13 +140,14 @@ class InferenceService:
         self.model_kwargs: ModelInitKwargs = model_kwargs or {}
 
         self.system: _SystemLike | None = None
-        self._model_input_channels = 4
+        self._model_input_channels = OBSERVATION_CHANNELS
+        self._onnx_input_channels = OBSERVATION_CHANNELS
         if self.checkpoint_path.exists():
             self.system = self._load_system()
             self.system.eval()
             self.system.to(self.device)
             self._model_input_channels = int(
-                getattr(self.system.model, "num_input_channels", 4)
+                getattr(self.system.model, "num_input_channels", OBSERVATION_CHANNELS)
             )
 
         self._onnx_session: _OnnxSessionLike | None = None
@@ -214,27 +221,25 @@ class InferenceService:
     def _load_system(self) -> _SystemLike:
         torch_module = self._require_torch()
         ckpt = self.checkpoint_path
-        if ckpt.suffix == ".ckpt":
-            from model.system import AtaxxZero
-
-            try:
-                return AtaxxZero.load_from_checkpoint(str(ckpt), map_location=self.device)
-            except RuntimeError as exc:
-                raise ValueError(
-                    "Checkpoint incompatible con architecture policy_head espacial; "
-                    "reentrena o usa carga parcial manual (strict=False)."
-                ) from exc
-
         checkpoint = torch_module.load(str(ckpt), map_location=self.device, weights_only=False)
         if not isinstance(checkpoint, dict):
-            raise ValueError("Invalid .pt checkpoint format: expected dictionary.")
-        state_dict_obj = checkpoint.get("state_dict")
-        if not isinstance(state_dict_obj, dict):
-            raise ValueError("Checkpoint dictionary must contain key 'state_dict'.")
+            raise ValueError("Invalid checkpoint format: expected dictionary.")
+        state_dict_obj = extract_checkpoint_state_dict(checkpoint)
 
-        system = self._build_spatial_system()
+        resolved_kwargs = extract_model_kwargs(checkpoint)
+        resolved_kwargs.update(self._extract_arch_kwargs(self.model_kwargs))
+        from model.transformer import AtaxxTransformerNet
+
+        system = _CheckpointSystemAdapter(AtaxxTransformerNet(**resolved_kwargs))
         try:
-            system.load_state_dict(self._extract_model_state_dict(state_dict_obj))
+            system.load_state_dict(
+                adapt_state_dict_observation_channels(
+                    self._extract_model_state_dict(state_dict_obj),
+                    target_channels=int(
+                        getattr(system.model, "num_input_channels", OBSERVATION_CHANNELS)
+                    ),
+                )
+            )
         except RuntimeError as exc:
             if self._is_legacy_state_dict(state_dict_obj):
                 legacy_system = self._build_legacy_system()
@@ -258,6 +263,18 @@ class InferenceService:
         session = self._load_onnx_session(self.onnx_path)
         self._onnx_session = session
         self._onnx_input_names = {inp.name for inp in session.get_inputs()}
+        for input_obj in session.get_inputs():
+            if input_obj.name != "board":
+                continue
+            raw_shape = getattr(input_obj, "shape", None)
+            if (
+                isinstance(raw_shape, list)
+                and len(raw_shape) >= 2
+                and isinstance(raw_shape[1], int)
+                and raw_shape[1] > 0
+            ):
+                self._onnx_input_channels = int(raw_shape[1])
+            break
 
     def _load_onnx_session(self, onnx_path: Path) -> _OnnxSessionLike:
         try:
@@ -308,6 +325,8 @@ class InferenceService:
             raise ValueError("ONNX session is not initialized.")
         mask_np = self._legal_action_mask(board).astype(np.float32)
         obs_np = board.get_observation().astype(np.float32, copy=False)[None, ...]
+        if obs_np.shape[1] != self._onnx_input_channels:
+            obs_np = obs_np[:, : self._onnx_input_channels]
         inputs: dict[str, Any] = {"board": obs_np}
         if "action_mask" in self._onnx_input_names:
             inputs["action_mask"] = mask_np[None, ...]
@@ -393,9 +412,9 @@ class InferenceService:
         if self.system is None:
             # If no torch model is available, degrade gracefully to fast ONNX/Torch.
             return self._fast_result(board)
-        if self._model_input_channels != 4:
-            # Legacy checkpoints were trained with 3-channel observations and do
-            # not support the current MCTS path that batches 4-channel states.
+        if self._model_input_channels != int(board.get_observation().shape[0]):
+            # Legacy checkpoints were trained with fewer channels and do not
+            # support the current MCTS path over full observations.
             return self._fast_result(board)
         torch_module = self._require_torch()
         mcts = self._ensure_mcts()

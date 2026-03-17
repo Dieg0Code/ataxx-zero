@@ -6,7 +6,7 @@ import numpy as np
 
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
-from game.constants import BOARD_SIZE
+from game.constants import BOARD_SIZE, OBSERVATION_CHANNELS
 from training.config_runtime import CONFIG
 from training.reward_runtime import (
     compute_state_potential,
@@ -39,7 +39,7 @@ class TestTrainingRewardRuntime(unittest.TestCase):
 
     def test_history_to_examples_keeps_terminal_targets_when_shaping_is_disabled(self) -> None:
         CONFIG["reward_shaping_enabled"] = False
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
         policy[ACTION_SPACE.pass_index] = 1.0
         history = [
@@ -57,7 +57,7 @@ class TestTrainingRewardRuntime(unittest.TestCase):
         CONFIG["reward_shaping_scale"] = 0.5
         CONFIG["reward_shaping_gamma"] = 1.0
         CONFIG["reward_shaping_draw_penalty"] = 0.0
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
         policy[ACTION_SPACE.pass_index] = 1.0
         history = [
@@ -75,7 +75,7 @@ class TestTrainingRewardRuntime(unittest.TestCase):
         CONFIG["reward_shaping_scale"] = 0.5
         CONFIG["reward_shaping_gamma"] = 1.0
         CONFIG["reward_shaping_draw_penalty"] = 0.0
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
         policy[ACTION_SPACE.pass_index] = 1.0
         history = [
@@ -91,7 +91,7 @@ class TestTrainingRewardRuntime(unittest.TestCase):
     def test_history_to_examples_penalizes_forced_draws(self) -> None:
         CONFIG["reward_shaping_enabled"] = False
         CONFIG["reward_shaping_draw_penalty"] = 0.2
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         policy = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
         policy[ACTION_SPACE.pass_index] = 1.0
         history = [

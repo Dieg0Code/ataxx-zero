@@ -33,34 +33,32 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _extract_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
-    hparams = checkpoint.get("hparams")
-    if not isinstance(hparams, dict):
-        return {}
-    allowed = {"d_model", "nhead", "num_layers", "dim_feedforward", "dropout"}
-    return {key: hparams[key] for key in allowed if key in hparams}
-
-
 def _load_system(checkpoint_path: Path) -> AtaxxZero:
+    from model.checkpoint_compat import (
+        adapt_state_dict_observation_channels,
+        extract_checkpoint_state_dict,
+        extract_model_kwargs,
+    )
     from model.system import AtaxxZero
-
-    if checkpoint_path.suffix == ".ckpt":
-        return AtaxxZero.load_from_checkpoint(str(checkpoint_path), map_location="cpu")
 
     payload = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise ValueError("Invalid checkpoint format: expected dictionary.")
-    state_dict_obj = payload.get("state_dict")
-    if not isinstance(state_dict_obj, dict):
-        raise ValueError("Checkpoint dictionary must contain key 'state_dict'.")
-    system = AtaxxZero(**_extract_model_kwargs(payload))
-    system.load_state_dict(state_dict_obj)
+    state_dict_obj = extract_checkpoint_state_dict(payload)
+    system = AtaxxZero(**extract_model_kwargs(payload))
+    system.load_state_dict(
+        adapt_state_dict_observation_channels(
+            state_dict_obj,
+            target_channels=int(system.model.num_input_channels),
+        )
+    )
     return system
 
 
 def main() -> None:
     args = _parse_args()
     _ensure_src_on_path()
+    from game.constants import OBSERVATION_CHANNELS
 
     try:
         ort = importlib.import_module("onnxruntime")
@@ -86,7 +84,7 @@ def main() -> None:
     input_names = {inp.name for inp in session.get_inputs()}
 
     batch = max(1, int(args.samples))
-    board = torch.randn(batch, 4, 7, 7, dtype=torch.float32)
+    board = torch.randn(batch, OBSERVATION_CHANNELS, 7, 7, dtype=torch.float32)
     mask = torch.ones(batch, system.num_actions, dtype=torch.float32)
 
     with torch.no_grad():

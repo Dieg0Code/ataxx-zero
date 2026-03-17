@@ -11,6 +11,35 @@ PolicyTarget = npt.NDArray[np.float32]
 TrainingExample = tuple[Observation, PolicyTarget, float]
 
 
+def _pick_indices_with_min_repeats(
+    *,
+    population: list[int],
+    sample_n: int,
+    rng: np.random.Generator,
+    repeat_counts: list[int],
+) -> list[int]:
+    if sample_n <= 0 or len(population) == 0:
+        return []
+
+    picked: list[int] = []
+    remaining = sample_n
+    while remaining > 0:
+        min_repeat_count = min(repeat_counts[idx] for idx in population)
+        candidates = [
+            idx
+            for idx in population
+            if repeat_counts[idx] == min_repeat_count
+        ]
+        order = rng.permutation(len(candidates))
+        take_n = min(remaining, len(candidates))
+        chosen = [candidates[int(i)] for i in order[:take_n]]
+        for idx in chosen:
+            repeat_counts[idx] += 1
+        picked.extend(chosen)
+        remaining -= take_n
+    return picked
+
+
 def sample_recent_mix(
     examples: list[TrainingExample],
     *,
@@ -22,9 +51,9 @@ def sample_recent_mix(
     """
     Build a training set biased toward recent samples while keeping global coverage.
 
-    The default behavior keeps dataset size unchanged and mixes:
-    - `recent_fraction` from the most recent `recent_window_fraction` of samples,
-    - the rest from the full training pool.
+    The sampler avoids replacement whenever the requested mix fits in the available
+    pools. If the requested recent quota is larger than the recent window, repeats
+    are spread as evenly as possible instead of hammering the same few examples.
     """
     if len(examples) == 0:
         return []
@@ -33,23 +62,31 @@ def sample_recent_mix(
     sample_n = total if sample_size is None else max(1, min(int(sample_size), total))
 
     recent_window_size = max(1, round(total * recent_window_fraction))
-    recent_window = examples[-recent_window_size:]
     recent_n = round(sample_n * recent_fraction)
     recent_n = min(sample_n, max(0, recent_n))
     global_n = sample_n - recent_n
 
     rng = np.random.default_rng(seed=seed)
-    picked: list[TrainingExample] = []
-    if recent_n > 0:
-        recent_idx = rng.integers(0, len(recent_window), size=recent_n, endpoint=False)
-        picked.extend(recent_window[int(i)] for i in recent_idx)
-    if global_n > 0:
-        global_idx = rng.integers(0, total, size=global_n, endpoint=False)
-        picked.extend(examples[int(i)] for i in global_idx)
-    if len(picked) > 1:
-        order = rng.permutation(len(picked))
-        picked = [picked[int(i)] for i in order]
-    return picked
+    repeat_counts = [0] * total
+    recent_population = list(range(total - recent_window_size, total))
+    picked_indices = _pick_indices_with_min_repeats(
+        population=recent_population,
+        sample_n=recent_n,
+        rng=rng,
+        repeat_counts=repeat_counts,
+    )
+    picked_indices.extend(
+        _pick_indices_with_min_repeats(
+            population=list(range(total)),
+            sample_n=global_n,
+            rng=rng,
+            repeat_counts=repeat_counts,
+        ),
+    )
+    if len(picked_indices) > 1:
+        order = rng.permutation(len(picked_indices))
+        picked_indices = [picked_indices[int(i)] for i in order]
+    return [examples[idx] for idx in picked_indices]
 
 
 class ReplayBuffer:

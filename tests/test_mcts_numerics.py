@@ -135,6 +135,46 @@ class TestMCTSNumerics(unittest.TestCase):
         self.assertEqual(first_calls, 1)
         self.assertEqual(second_calls, 1)
 
+    def test_mcts_inference_cache_distinguishes_half_move_progress(self) -> None:
+        class CountingModel(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def forward(
+                self,
+                board_tensor: torch.Tensor,
+                action_mask: torch.Tensor | None = None,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                self.calls += 1
+                batch = board_tensor.shape[0]
+                logits = torch.zeros((batch, ACTION_SPACE.num_actions), dtype=torch.float32)
+                value = torch.zeros((batch, 1), dtype=torch.float32)
+                if action_mask is not None:
+                    logits = logits.masked_fill(action_mask <= 0, -1e9)
+                return logits, value
+
+        model = CountingModel()
+        mcts = MCTS(
+            model=model,
+            c_puct=1.5,
+            n_simulations=0,
+            device="cpu",
+            cache_size=32,
+        )
+        board_early = AtaxxBoard()
+        board_late = AtaxxBoard()
+        board_late.half_moves = 50
+
+        self.assertFalse(
+            np.array_equal(board_early.get_observation(), board_late.get_observation()),
+        )
+
+        mcts._expand_batch([(MCTSNode(prior=1.0), board_early)])
+        self.assertEqual(model.calls, 1)
+        mcts._expand_batch([(MCTSNode(prior=1.0), board_late)])
+        self.assertEqual(model.calls, 2)
+
     def test_mcts_leaf_batching_reduces_forward_calls(self) -> None:
         class CountingModel(nn.Module):
             def __init__(self) -> None:

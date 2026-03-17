@@ -1,19 +1,28 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import TypedDict
 
 import numpy as np
+from typing_extensions import NotRequired
 
 from game.board import AtaxxBoard
 from game.constants import BOARD_SIZE, EMPTY, PLAYER_1, PLAYER_2
 from game.types import Grid
 
 
+class PositionCountState(TypedDict):
+    grid: list[list[int]]
+    current_player: int
+    count: int
+
+
 class BoardState(TypedDict):
     grid: list[list[int]]
     current_player: int
     half_moves: int
+    position_counts: NotRequired[list[PositionCountState]]
 
 
 _VALID_CELL_VALUES = {EMPTY, PLAYER_1, PLAYER_2}
@@ -53,11 +62,69 @@ def _parse_grid(grid_raw: object) -> Grid:
 
 
 def board_to_state(board: AtaxxBoard) -> BoardState:
+    current_key = board._position_key()
+    position_counts = board._position_counts
+    if position_counts.get(current_key, 0) <= 0:
+        # Some tests and API flows build terminal boards by mutating `grid`
+        # directly. If repetition history no longer matches the visible board,
+        # serialize a coherent baseline instead of emitting an impossible state.
+        position_counts = Counter({current_key: 1})
     return {
         "grid": board.grid.astype(np.int8).tolist(),
         "current_player": int(board.current_player),
         "half_moves": int(board.half_moves),
+        "position_counts": [
+            {
+                "grid": np.frombuffer(position_grid, dtype=np.int8)
+                .reshape((BOARD_SIZE, BOARD_SIZE))
+                .tolist(),
+                "current_player": int(position_player),
+                "count": int(count),
+            }
+            for (position_player, position_grid), count in position_counts.items()
+        ],
     }
+
+
+def _parse_position_counts(
+    raw_position_counts: object,
+) -> Counter[tuple[int, bytes]] | None:
+    if raw_position_counts is None:
+        return None
+    if not isinstance(raw_position_counts, Sequence) or isinstance(
+        raw_position_counts,
+        (str, bytes),
+    ):
+        raise ValueError("position_counts must be a sequence.")
+
+    counts: Counter[tuple[int, bytes]] = Counter()
+    for idx, entry in enumerate(raw_position_counts):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"position_counts[{idx}] must be a mapping.")
+        if "grid" not in entry:
+            raise ValueError(f"position_counts[{idx}] missing required key: 'grid'.")
+        if "current_player" not in entry:
+            raise ValueError(
+                f"position_counts[{idx}] missing required key: 'current_player'."
+            )
+        if "count" not in entry:
+            raise ValueError(f"position_counts[{idx}] missing required key: 'count'.")
+
+        grid = _parse_grid(entry["grid"])
+        current_player = _ensure_int(
+            f"position_counts[{idx}]['current_player']",
+            entry["current_player"],
+        )
+        if current_player not in _VALID_PLAYERS:
+            raise ValueError(
+                f"position_counts[{idx}]['current_player'] must be one of "
+                f"{sorted(_VALID_PLAYERS)}."
+            )
+        count = _ensure_int(f"position_counts[{idx}]['count']", entry["count"])
+        if count <= 0:
+            raise ValueError(f"position_counts[{idx}]['count'] must be > 0.")
+        counts[(current_player, grid.tobytes())] = count
+    return counts
 
 
 def board_from_state(payload: Mapping[str, object]) -> AtaxxBoard:
@@ -82,4 +149,12 @@ def board_from_state(payload: Mapping[str, object]) -> AtaxxBoard:
 
     board = AtaxxBoard(grid=grid, player=current_player)
     board.half_moves = half_moves
+    parsed_position_counts = _parse_position_counts(payload.get("position_counts"))
+    if parsed_position_counts is not None:
+        current_key = board._position_key()
+        if current_key not in parsed_position_counts:
+            raise ValueError("position_counts must include the current board position.")
+        # Full repetition history affects legal terminality, so round-trip it exactly
+        # when present instead of silently resetting to the current position only.
+        board._position_counts = parsed_position_counts
     return board

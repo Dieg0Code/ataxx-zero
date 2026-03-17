@@ -9,7 +9,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.board import AtaxxBoard
-from game.constants import BOARD_SIZE, DRAW, EMPTY, PLAYER_1, PLAYER_2
+from game.constants import (
+    BOARD_SIZE,
+    DRAW,
+    EMPTY,
+    OBSERVATION_CHANNELS,
+    PLAYER_1,
+    PLAYER_2,
+)
 
 
 class TestBoardRules(unittest.TestCase):
@@ -44,14 +51,47 @@ class TestBoardRules(unittest.TestCase):
         board.step((3, 3, 3, 4))
         self.assertEqual(int(board.grid[4, 4]), PLAYER_1)
 
-    def test_observation_has_four_channels_without_nans(self) -> None:
+    def test_observation_has_expected_channels_without_nans(self) -> None:
         board = AtaxxBoard()
         obs = board.get_observation()
-        self.assertEqual(obs.shape, (4, BOARD_SIZE, BOARD_SIZE))
+        self.assertEqual(obs.shape, (OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE))
         self.assertFalse(np.isnan(obs).any())
         self.assertTrue((obs >= 0).all())
         self.assertTrue((obs <= 1).all())
         self.assertTrue((board.grid == EMPTY).sum() > 0)
+
+    def test_observation_distinguishes_repetition_pressure(self) -> None:
+        board_fresh = AtaxxBoard()
+        board_repeated = board_fresh.copy()
+        board_repeated._position_counts[board_repeated._position_key()] = 2
+
+        obs_fresh = board_fresh.get_observation()
+        obs_repeated = board_repeated.get_observation()
+
+        self.assertTrue(np.array_equal(obs_fresh[:4], obs_repeated[:4]))
+        self.assertTrue(np.array_equal(obs_fresh[5:], obs_repeated[5:]))
+        self.assertEqual(float(obs_fresh[4, 0, 0]), 0.0)
+        self.assertEqual(float(obs_repeated[4, 0, 0]), 0.5)
+
+    def test_initial_observation_exposes_clone_jump_destinations_and_active_pieces(self) -> None:
+        board = AtaxxBoard()
+        obs = board.get_observation()
+
+        self.assertEqual(int(np.sum(obs[5])), 6)
+        self.assertEqual(int(np.sum(obs[6])), 10)
+        self.assertEqual(int(np.sum(obs[7])), 6)
+        self.assertEqual(int(np.sum(obs[8])), 10)
+        self.assertEqual(int(np.sum(obs[9])), 2)
+        self.assertEqual(int(np.sum(obs[10])), 2)
+
+        self.assertEqual(float(obs[5, 1, 1]), 1.0)
+        self.assertEqual(float(obs[6, 2, 2]), 1.0)
+        self.assertEqual(float(obs[7, 1, BOARD_SIZE - 2]), 1.0)
+        self.assertEqual(float(obs[8, 2, BOARD_SIZE - 3]), 1.0)
+        self.assertEqual(float(obs[9, 0, 0]), 1.0)
+        self.assertEqual(float(obs[9, BOARD_SIZE - 1, BOARD_SIZE - 1]), 1.0)
+        self.assertEqual(float(obs[10, 0, BOARD_SIZE - 1]), 1.0)
+        self.assertEqual(float(obs[10, BOARD_SIZE - 1, 0]), 1.0)
 
     def test_copy_creates_independent_board(self) -> None:
         board = AtaxxBoard()

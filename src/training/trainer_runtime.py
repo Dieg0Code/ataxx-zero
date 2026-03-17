@@ -9,6 +9,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import Logger
 from pytorch_lightning.strategies import DDPStrategy
 
+from game.constants import OBSERVATION_CHANNELS
 from training.config_runtime import (
     TrainerPrecision,
     cfg_bool,
@@ -106,7 +107,7 @@ def build_trainer(
 def export_onnx(model: torch.nn.Module, path: str, device: str) -> None:
     model.eval()
     model.to(device)
-    dummy_input = torch.randn(1, 4, 7, 7, device=device)
+    dummy_input = torch.randn(1, OBSERVATION_CHANNELS, 7, 7, device=device)
     try:
         torch.onnx.export(
             model=model,

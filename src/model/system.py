@@ -9,6 +9,7 @@ from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch import optim
 
 from game.actions import ACTION_SPACE
+from game.constants import OBSERVATION_CHANNELS
 from model.transformer import AtaxxTransformerNet
 
 
@@ -50,7 +51,7 @@ class AtaxxZero(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.example_input_array = torch.zeros(1, 4, 7, 7)
+        self.example_input_array = torch.zeros(1, OBSERVATION_CHANNELS, 7, 7)
 
     def forward(
         self,
@@ -101,9 +102,9 @@ class AtaxxZero(pl.LightningModule):
         batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
         boards, target_pis, target_vs = batch
-        # Training must not see a target-derived action mask, otherwise policy loss can
-        # become artificially easy (label leakage) when targets are sparse/one-hot.
-        pi_logits, v_pred = self(boards)
+        # Use legality derived from the observed board state, not from sparse targets.
+        action_mask = self.model.build_action_mask(boards)
+        pi_logits, v_pred = self(boards, action_mask=action_mask)
 
         loss_v = functional.mse_loss(v_pred.view(-1), target_vs.view(-1))
         log_probs = functional.log_softmax(pi_logits, dim=1)

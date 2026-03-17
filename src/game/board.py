@@ -8,6 +8,7 @@ from .constants import (
     BOARD_SIZE,
     DRAW,
     EMPTY,
+    OBSERVATION_CHANNELS,
     PLAYER_1,
     PLAYER_2,
     WIN_P1,
@@ -257,12 +258,41 @@ class AtaxxBoard:
             return self.grid.copy()
         return -self.grid
 
+    def _build_mobility_planes(self, player: Player) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        clone_dest = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        jump_dest = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        active_pieces = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+
+        piece_coords = np.argwhere(self.grid == player)
+        for r, c in piece_coords:
+            rr = int(r)
+            cc = int(c)
+            origin_idx = rr * BOARD_SIZE + cc
+            has_move = False
+            for tr, tc in _RADIUS2_TARGETS[origin_idx]:
+                if self.grid[tr, tc] != EMPTY:
+                    continue
+                has_move = True
+                dist = move_distance(rr, cc, tr, tc)
+                if is_clone_move(dist):
+                    clone_dest[tr, tc] = 1.0
+                elif is_jump_move(dist):
+                    jump_dest[tr, tc] = 1.0
+            if has_move:
+                active_pieces[rr, cc] = 1.0
+
+        return clone_dest, jump_dest, active_pieces
+
     def get_observation(self) -> np.ndarray:
         """
-        4-channel observation for NN:
-        0: own pieces, 1: opponent pieces, 2: empty squares, 3: half-move progress.
+        11-channel observation for NN:
+        0: own pieces, 1: opponent pieces, 2: empty squares,
+        3: half-move progress, 4: current-position repetition pressure,
+        5-6: own clone/jump destinations,
+        7-8: opponent clone/jump destinations,
+        9-10: own/opponent active pieces.
         """
-        obs = np.zeros((4, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+        obs = np.zeros((OBSERVATION_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         obs[0] = np.asarray(self.grid == self.current_player, dtype=np.float32)
         obs[1] = np.asarray(
             self.grid == opponent(self.current_player),
@@ -274,6 +304,26 @@ class AtaxxBoard:
             min(1.0, float(self.half_moves) / 100.0),
             dtype=np.float32,
         )
+        # Threefold draw depends on how many times the current position has already
+        # appeared. Expose that pressure explicitly so value targets stay Markov.
+        repetition_visits = int(self._position_counts[self._position_key()])
+        obs[4] = np.full(
+            (BOARD_SIZE, BOARD_SIZE),
+            min(1.0, float(max(0, repetition_visits - 1)) / 2.0),
+            dtype=np.float32,
+        )
+        own_clone_dest, own_jump_dest, own_active = self._build_mobility_planes(
+            self.current_player,
+        )
+        opp_clone_dest, opp_jump_dest, opp_active = self._build_mobility_planes(
+            opponent(self.current_player),
+        )
+        obs[5] = own_clone_dest
+        obs[6] = own_jump_dest
+        obs[7] = opp_clone_dest
+        obs[8] = opp_jump_dest
+        obs[9] = own_active
+        obs[10] = opp_active
         return obs
 
     def __str__(self) -> str:

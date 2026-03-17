@@ -141,36 +141,36 @@ def _resolve_heuristic_levels(
 
 
 def _load_system(checkpoint_path: str, device: str) -> AtaxxZero:
+    from model.checkpoint_compat import (
+        adapt_state_dict_observation_channels,
+        extract_checkpoint_state_dict,
+        extract_model_kwargs,
+    )
     from model.system import AtaxxZero
 
-    if checkpoint_path.endswith(".ckpt"):
+    system = AtaxxZero()
+    if checkpoint_path:
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=device,
+            weights_only=False,
+        )
+        if not isinstance(checkpoint, dict):
+            raise ValueError("Invalid checkpoint format")
+        state_dict_obj = extract_checkpoint_state_dict(checkpoint)
+        system = AtaxxZero(**extract_model_kwargs(checkpoint))
         try:
-            system = AtaxxZero.load_from_checkpoint(checkpoint_path, map_location=device)
+            system.load_state_dict(
+                adapt_state_dict_observation_channels(
+                    state_dict_obj,
+                    target_channels=int(system.model.num_input_channels),
+                )
+            )
         except RuntimeError as exc:
             raise ValueError(
                 "Checkpoint incompatible con architecture policy_head espacial; "
                 "reentrena o usa carga parcial manual (strict=False)."
             ) from exc
-    else:
-        system = AtaxxZero()
-        if checkpoint_path:
-            checkpoint = torch.load(
-                checkpoint_path,
-                map_location=device,
-                weights_only=False,
-            )
-            if not isinstance(checkpoint, dict):
-                raise ValueError("Invalid .pt checkpoint format")
-            state_dict_obj = checkpoint.get("state_dict")
-            if not isinstance(state_dict_obj, dict):
-                raise ValueError("Checkpoint must contain key 'state_dict'")
-            try:
-                system.load_state_dict(state_dict_obj)
-            except RuntimeError as exc:
-                raise ValueError(
-                    "Checkpoint incompatible con architecture policy_head espacial; "
-                    "reentrena o usa carga parcial manual (strict=False)."
-                ) from exc
     system.eval()
     system.to(device)
     return system

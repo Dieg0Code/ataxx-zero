@@ -16,6 +16,12 @@ from api.db.enums import (
 )
 
 
+class PositionCountPayload(BaseModel):
+    grid: list[list[int]]
+    current_player: int
+    count: int
+
+
 class BoardStatePayload(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -38,6 +44,7 @@ class BoardStatePayload(BaseModel):
     grid: list[list[int]]
     current_player: int
     half_moves: int
+    position_counts: list[PositionCountPayload] | None = None
 
 
 class MoveRequest(BaseModel):

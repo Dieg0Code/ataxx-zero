@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from data.dataset import AtaxxDataset, ValidationDataset, split_train_val_examples
 from data.replay_buffer import ReplayBuffer
 from game.actions import ACTION_SPACE
+from game.constants import OBSERVATION_CHANNELS
 
 
 class TestDatasetNumerics(unittest.TestCase):
@@ -26,7 +27,7 @@ class TestDatasetNumerics(unittest.TestCase):
         np.random.seed(33)
         self.buffer = ReplayBuffer(capacity=32)
         for _ in range(16):
-            obs = np.random.randn(4, 7, 7).astype(np.float32)
+            obs = np.random.randn(OBSERVATION_CHANNELS, 7, 7).astype(np.float32)
             pi = np.random.rand(ACTION_SPACE.num_actions).astype(np.float32)
             pi /= float(np.sum(pi))
             value = float(np.random.choice([-1.0, 0.0, 1.0]))
@@ -48,7 +49,7 @@ class TestDatasetNumerics(unittest.TestCase):
         split = 0.25
         buffer = ReplayBuffer(capacity=32)
         for idx in range(8):
-            obs = np.zeros((4, 7, 7), dtype=np.float32)
+            obs = np.zeros((OBSERVATION_CHANNELS, 7, 7), dtype=np.float32)
             obs[0, 0, 0] = float(idx)
             pi = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
             pi[0] = 1.0
@@ -80,7 +81,7 @@ class TestDatasetNumerics(unittest.TestCase):
     def test_split_train_val_examples_shuffle_is_reproducible(self) -> None:
         examples: list[tuple[np.ndarray, np.ndarray, float]] = []
         for idx in range(10):
-            obs = np.zeros((4, 7, 7), dtype=np.float32)
+            obs = np.zeros((OBSERVATION_CHANNELS, 7, 7), dtype=np.float32)
             obs[0, 0, 0] = float(idx)
             pi = np.zeros(ACTION_SPACE.num_actions, dtype=np.float32)
             pi[0] = 1.0

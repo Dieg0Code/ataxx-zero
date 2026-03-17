@@ -8,6 +8,10 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import Logger
 from torch.utils.data import DataLoader
 
+from model.checkpoint_compat import (
+    adapt_state_dict_observation_channels,
+    extract_checkpoint_state_dict,
+)
 from training.bootstrap import generate_imitation_data
 from training.callbacks import OptimizerStateTransfer
 from training.config_runtime import (
@@ -48,10 +52,13 @@ def restore_system_from_checkpoint(system: AtaxxZero, checkpoint_path: str) -> N
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise ValueError("Invalid checkpoint payload: expected dictionary.")
-    state_dict_obj = payload.get("state_dict")
-    if not isinstance(state_dict_obj, dict):
-        raise ValueError("Checkpoint payload missing state_dict dictionary.")
-    system.load_state_dict(state_dict_obj)
+    state_dict_obj = extract_checkpoint_state_dict(payload)
+    system.load_state_dict(
+        adapt_state_dict_observation_channels(
+            state_dict_obj,
+            target_channels=int(system.model.num_input_channels),
+        )
+    )
 
 
 def prepare_train_val_examples(

@@ -13,6 +13,7 @@ root = Path(__file__).resolve().parent
 src = root / "src"
 if str(src) not in sys.path:
     sys.path.insert(0, str(src))
+from inference.checkpoint_duel_runtime import run_match_results_to_summary  # noqa: E402
 from training.callbacks import OptimizerStateTransfer  # noqa: E402
 from training.checkpointing import (  # noqa: E402
     cleanup_local_checkpoints,
@@ -38,6 +39,10 @@ from training.config_runtime import (  # noqa: E402
 )
 from training.eval_gating import compute_regression_gate  # noqa: E402
 from training.eval_runtime import evaluate_model  # noqa: E402
+from training.league_runtime import (  # noqa: E402
+    record_checkpoint_in_league,
+    resolve_champion_entry,
+)
 from training.logging_runtime import build_training_logger  # noqa: E402
 from training.loop_runtime import (  # noqa: E402
     build_train_loader,
@@ -219,6 +224,7 @@ def main() -> None:
             )
 
             eval_stats: dict[str, float | int | str] | None = None
+            eval_level_summaries: dict[str, dict[str, float | int | str]] = {}
             if cfg_bool("eval_enabled") and iteration % cfg_int("eval_every") == 0:
                 try:
                     eval_levels = resolve_eval_levels()
@@ -237,6 +243,7 @@ def main() -> None:
                             seed=cfg_int("seed") + 10_000 + iteration + (level_idx * 997),
                         )
                         monitor.log_eval_snapshot(iteration=iteration, eval_stats=current_eval)
+                        eval_level_summaries[heuristic_level] = current_eval
                         level_scores[heuristic_level] = float(current_eval["score"])
                         eval_score_wins += int(current_eval["wins"])
                         eval_score_losses += int(current_eval["losses"])
@@ -309,6 +316,44 @@ def main() -> None:
                 )
             except OSError:
                 monitor.log_warning(iteration=iteration, message="local checkpoint save failed.")
+
+            if cfg_bool("league_enabled") and len(eval_level_summaries) > 0:
+                try:
+                    champion_entry = resolve_champion_entry(current_checkpoint_path=manual_ckpt)
+                    champion_series_summary = None
+                    if champion_entry is not None and cfg_int("league_champion_games") > 0:
+                        champion_series_summary = run_match_results_to_summary(
+                            checkpoint_a=manual_ckpt,
+                            checkpoint_b=champion_entry.artifact_path,
+                            games=cfg_int("league_champion_games"),
+                            device=device,
+                            mcts_sims=cfg_int("eval_sims"),
+                            c_puct=cfg_float("c_puct"),
+                            seed=cfg_int("seed") + 200_000 + iteration,
+                        )
+                        monitor.log_warning(
+                            iteration=iteration,
+                            message=(
+                                "league champion duel "
+                                f"score={float(champion_series_summary['checkpoint_a_score']):.3f} "
+                                f"vs {champion_entry.display_name}"
+                            ),
+                        )
+                    updated_league = record_checkpoint_in_league(
+                        checkpoint_path=manual_ckpt,
+                        heuristic_series_by_level=eval_level_summaries,
+                        champion_entry=champion_entry,
+                        champion_series_summary=champion_series_summary,
+                    )
+                    monitor.log_warning(
+                        iteration=iteration,
+                        message=f"league updated champion={updated_league.get('champion_id')}",
+                    )
+                except Exception as exc:
+                    monitor.log_warning(
+                        iteration=iteration,
+                        message=f"league update failed, continuing training: {exc}",
+                    )
 
             if hf_checkpointer is not None:
                 try:

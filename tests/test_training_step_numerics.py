@@ -11,6 +11,8 @@ import torch.nn.functional as functional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.actions import ACTION_SPACE
+from game.board import AtaxxBoard
+from game.constants import OBSERVATION_CHANNELS
 from model.system import AtaxxZero
 
 
@@ -41,8 +43,13 @@ class TestTrainingStepNumerics(unittest.TestCase):
         system.train()
 
         batch_size = 8
-        boards = torch.randn(batch_size, 4, 7, 7)
-        policy_targets = torch.rand(batch_size, ACTION_SPACE.num_actions)
+        board = AtaxxBoard()
+        observation = torch.from_numpy(board.get_observation()).float()
+        boards = observation.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+        legal_mask = torch.from_numpy(
+            ACTION_SPACE.mask_from_moves(board.get_valid_moves(), include_pass=False)
+        ).float()
+        policy_targets = legal_mask.unsqueeze(0).repeat(batch_size, 1)
         policy_targets = policy_targets / torch.sum(policy_targets, dim=1, keepdim=True)
         value_targets = torch.rand(batch_size) * 2.0 - 1.0
 
@@ -71,7 +78,7 @@ class TestTrainingStepNumerics(unittest.TestCase):
         )
         system.eval()
 
-        boards = torch.randn(4, 4, 7, 7)
+        boards = torch.randn(4, OBSERVATION_CHANNELS, 7, 7)
         policy_a, value_a = system.predict_step(boards, batch_idx=0)
         policy_b, value_b = system.predict_step((boards,), batch_idx=0)
 
@@ -90,7 +97,7 @@ class TestTrainingStepNumerics(unittest.TestCase):
             dropout=0.0,
             scheduler_type="none",
         )
-        boards = torch.randn(2, 4, 7, 7)
+        boards = torch.randn(2, OBSERVATION_CHANNELS, 7, 7)
         mask = torch.ones(2, ACTION_SPACE.num_actions)
 
         original_forward = system.model.forward
@@ -102,7 +109,7 @@ class TestTrainingStepNumerics(unittest.TestCase):
             self.assertIsInstance(action_mask_obj, torch.Tensor)
             self.assertTrue(torch.equal(action_mask_obj, mask))
 
-    def test_common_step_does_not_pass_target_derived_action_mask(self) -> None:
+    def test_model_build_action_mask_matches_board_legality(self) -> None:
         system = AtaxxZero(
             learning_rate=1e-3,
             d_model=64,
@@ -112,9 +119,29 @@ class TestTrainingStepNumerics(unittest.TestCase):
             dropout=0.0,
             scheduler_type="none",
         )
-        boards = torch.randn(2, 4, 7, 7)
+        board = AtaxxBoard()
+        boards = torch.from_numpy(board.get_observation()).unsqueeze(0)
+
+        mask = system.model.build_action_mask(boards)
+        expected = ACTION_SPACE.mask_from_moves(board.get_valid_moves(), include_pass=False)
+
+        self.assertTrue(torch.equal(mask[0], torch.from_numpy(expected)))
+        self.assertEqual(float(mask[0, ACTION_SPACE.pass_index].item()), 0.0)
+
+    def test_common_step_passes_board_derived_action_mask(self) -> None:
+        system = AtaxxZero(
+            learning_rate=1e-3,
+            d_model=64,
+            nhead=8,
+            num_layers=2,
+            dim_feedforward=128,
+            dropout=0.0,
+            scheduler_type="none",
+        )
+        board = AtaxxBoard()
+        boards = torch.from_numpy(board.get_observation()).unsqueeze(0).repeat(2, 1, 1, 1)
         target_pis = torch.zeros(2, ACTION_SPACE.num_actions)
-        target_pis[0, 7] = 1.0
+        target_pis[0, ACTION_SPACE.pass_index] = 1.0
         target_vs = torch.zeros(2)
         pi_logits = torch.randn(2, ACTION_SPACE.num_actions)
         v_pred = torch.zeros(2, 1)
@@ -125,7 +152,9 @@ class TestTrainingStepNumerics(unittest.TestCase):
 
         self.assertEqual(len(args), 1)
         self.assertIsInstance(args[0], torch.Tensor)
-        self.assertEqual(kwargs.get("action_mask"), None)
+        action_mask = kwargs.get("action_mask")
+        self.assertIsInstance(action_mask, torch.Tensor)
+        self.assertEqual(float(action_mask[0, ACTION_SPACE.pass_index].item()), 0.0)
 
     def test_common_step_applies_value_loss_coefficient(self) -> None:
         system = AtaxxZero(
@@ -138,7 +167,7 @@ class TestTrainingStepNumerics(unittest.TestCase):
             dropout=0.0,
             scheduler_type="none",
         )
-        boards = torch.randn(2, 4, 7, 7)
+        boards = torch.randn(2, OBSERVATION_CHANNELS, 7, 7)
         target_pis = torch.zeros(2, ACTION_SPACE.num_actions)
         target_pis[0, 0] = 1.0
         target_pis[1, 1] = 1.0

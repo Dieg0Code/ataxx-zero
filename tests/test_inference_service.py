@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.actions import ACTION_SPACE
 from game.board import AtaxxBoard
+from game.constants import OBSERVATION_CHANNELS
 from inference.legacy_model import LegacyAtaxxSystem
 from inference.service import InferenceService
 from model.system import AtaxxZero
@@ -100,6 +102,43 @@ class TestInferenceService(unittest.TestCase):
                 result = service.predict(AtaxxBoard(), mode="fast")
 
             self.assertEqual(result.mode, "fast")
+            self.assertIsNotNone(result.move)
+
+    def test_loads_four_channel_spatial_checkpoint_with_padded_repetition_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model = AtaxxTransformerNet(
+                d_model=64,
+                nhead=8,
+                num_layers=2,
+                dim_feedforward=128,
+                dropout=0.0,
+            )
+            old_state_dict = {f"model.{key}": value.clone() for key, value in model.state_dict().items()}
+            old_weight = old_state_dict["model.input_proj.weight"]
+            old_state_dict["model.input_proj.weight"] = old_weight[:, :4].clone()
+            ckpt_path = Path(tmp_dir) / "spatial_v4.pt"
+            torch.save({"state_dict": old_state_dict}, ckpt_path)
+
+            service = InferenceService(
+                checkpoint_path=ckpt_path,
+                device="cpu",
+                model_kwargs={
+                    "d_model": 64,
+                    "nhead": 8,
+                    "num_layers": 2,
+                    "dim_feedforward": 128,
+                    "dropout": 0.0,
+                },
+            )
+
+            system = service.system
+            self.assertIsNotNone(system)
+            model = cast(AtaxxTransformerNet, system.model)
+            weight = model.input_proj.weight
+            self.assertEqual(int(weight.shape[1]), OBSERVATION_CHANNELS)
+            self.assertTrue(torch.allclose(weight[:, 4], torch.zeros_like(weight[:, 4])))
+            result = service.predict(AtaxxBoard(), mode="strong")
+            self.assertEqual(result.mode, "strong")
             self.assertIsNotNone(result.move)
 
     def test_strong_mode_returns_legal_action(self) -> None:

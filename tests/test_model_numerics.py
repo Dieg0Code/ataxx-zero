@@ -11,6 +11,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from game.actions import ACTION_SPACE
+from game.constants import OBSERVATION_CHANNELS
 from model.transformer import AtaxxTransformerNet
 
 
@@ -34,7 +35,7 @@ class TestModelNumerics(unittest.TestCase):
             dim_feedforward=128,
             dropout=0.0,
         )
-        x = torch.randn(8, 4, 7, 7)
+        x = torch.randn(8, OBSERVATION_CHANNELS, 7, 7)
         logits, value = model(x)
 
         self.assertEqual(tuple(logits.shape), (8, ACTION_SPACE.num_actions))
@@ -50,7 +51,7 @@ class TestModelNumerics(unittest.TestCase):
             dim_feedforward=128,
             dropout=0.0,
         )
-        x = torch.randn(4, 4, 7, 7)
+        x = torch.randn(4, OBSERVATION_CHANNELS, 7, 7)
         policy, value = model.predict(x)
 
         sums = torch.sum(policy, dim=1)
@@ -67,7 +68,7 @@ class TestModelNumerics(unittest.TestCase):
             dropout=0.0,
         )
         model.eval()
-        x = torch.zeros(2, 4, 7, 7)
+        x = torch.zeros(2, OBSERVATION_CHANNELS, 7, 7)
         with torch.no_grad():
             logits, value = model(x)
         self.assertEqual(tuple(logits.shape), (2, ACTION_SPACE.num_actions))
@@ -99,7 +100,7 @@ class TestModelNumerics(unittest.TestCase):
             dropout=0.0,
         )
         model.eval()
-        x = torch.zeros(1, 4, 7, 7)
+        x = torch.zeros(1, OBSERVATION_CHANNELS, 7, 7)
         mask = torch.zeros(1, ACTION_SPACE.num_actions)
         mask[0, 0] = 1.0
         with torch.no_grad():
@@ -117,7 +118,7 @@ class TestModelNumerics(unittest.TestCase):
             dropout=0.0,
         )
         model.eval()
-        x = torch.randn(1, 4, 7, 7)
+        x = torch.randn(1, OBSERVATION_CHANNELS, 7, 7)
         with torch.no_grad():
             logits_1, value_1 = model(x)
             logits_2, value_2 = model(x)
