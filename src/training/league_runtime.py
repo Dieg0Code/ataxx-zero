@@ -206,6 +206,42 @@ def build_checkpoint_pool_specs(
     return specs
 
 
+def _normalize_series_summary_for_league(
+    series_summary: dict[str, float | int | str],
+) -> dict[str, float | int | str]:
+    if "checkpoint_a_wins" in series_summary:
+        return {
+            "games": int(series_summary["games"]),
+            "checkpoint_a_wins": int(series_summary["checkpoint_a_wins"]),
+            "checkpoint_b_wins": int(series_summary["checkpoint_b_wins"]),
+            "draws": int(series_summary["draws"]),
+            "checkpoint_a_score": float(series_summary["checkpoint_a_score"]),
+            "avg_turns": float(series_summary.get("avg_turns", 0.0)),
+        }
+
+    if "wins" not in series_summary or "losses" not in series_summary:
+        raise ValueError("Unsupported series summary for league update.")
+
+    games = int(series_summary["games"])
+    wins = int(series_summary["wins"])
+    losses = int(series_summary["losses"])
+    draws = int(series_summary["draws"])
+    if wins + losses + draws != games:
+        raise ValueError("Series summary counts do not match number of games.")
+    if games <= 0:
+        score = 0.0
+    else:
+        score = float(series_summary.get("score", (wins + (0.5 * draws)) / float(games)))
+    return {
+        "games": games,
+        "checkpoint_a_wins": wins,
+        "checkpoint_b_wins": losses,
+        "draws": draws,
+        "checkpoint_a_score": score,
+        "avg_turns": float(series_summary.get("avg_turns", 0.0)),
+    }
+
+
 def record_checkpoint_in_league(
     *,
     checkpoint_path: Path,
@@ -225,7 +261,7 @@ def record_checkpoint_in_league(
             participant_a_name=participant_a_name,
             participant_b_id=f"heu:{level}",
             participant_b_name=level,
-            series_summary=series_summary,
+            series_summary=_normalize_series_summary_for_league(series_summary),
             participant_a_artifact_path=str(checkpoint_path),
         )
 
@@ -236,7 +272,7 @@ def record_checkpoint_in_league(
             participant_a_name=participant_a_name,
             participant_b_id=champion_entry.participant_id,
             participant_b_name=champion_entry.display_name,
-            series_summary=champion_series_summary,
+            series_summary=_normalize_series_summary_for_league(champion_series_summary),
             participant_a_artifact_path=str(checkpoint_path),
             participant_b_artifact_path=str(champion_entry.artifact_path),
         )

@@ -156,6 +156,39 @@ class TestTrainingLeagueRuntime(unittest.TestCase):
         )
         self.assertEqual(league["champion_id"], "ckpt:manual_iter_012")
 
+    def test_record_checkpoint_in_league_accepts_eval_style_heuristic_summary(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            checkpoint_path = tmp_path / "manual_iter_018.ckpt"
+            _write_checkpoint(checkpoint_path)
+            league_path = tmp_path / "league.json"
+
+            with patch("training.league_runtime.cfg_str", side_effect=lambda key: str(league_path) if key == "league_path" else ""), patch(
+                "training.league_runtime.cfg_bool",
+                side_effect=lambda key: key == "league_enabled",
+            ):
+                league = record_checkpoint_in_league(
+                    checkpoint_path=checkpoint_path,
+                    heuristic_series_by_level={
+                        "apex": {
+                            "games": 6,
+                            "wins": 4,
+                            "losses": 1,
+                            "draws": 1,
+                            "score": 0.75,
+                        },
+                    },
+                    champion_entry=None,
+                    champion_series_summary=None,
+                )
+
+        recent_series = league["recent_series"]
+        self.assertEqual(len(recent_series), 1)
+        self.assertEqual(recent_series[0]["checkpoint_a_wins"], 4)
+        self.assertEqual(recent_series[0]["checkpoint_b_wins"], 1)
+        self.assertEqual(recent_series[0]["draws"], 1)
+        self.assertEqual(recent_series[0]["avg_turns"], 0.0)
+
     def test_resolve_champion_entry_returns_checkpoint_only(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
